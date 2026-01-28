@@ -60,3 +60,6 @@ program/target/
 
 # Gradle
 .gradle/
+
+# Local development notes
+WordDuel.md
