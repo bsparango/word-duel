@@ -23,7 +23,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp } from '@react-navigation/native';
 
 // Import our utility functions
-import { generateLetterPool, calculateScore } from '../utils/gameLogic';
+import { generateLetterPool, generateRandomLetters, calculateScore } from '../utils/gameLogic';
 import { isValidWord } from '../utils/dictionary';
 import LetterTile from '../components/LetterTile';
 
@@ -229,8 +229,32 @@ export default function GameScreen({ navigation, route }: GameScreenProps) {
     // Show success feedback
     setFeedback(`+${wordScore} points!`);
 
-    // Clear current word but DON'T return letters to pool
-    // (each letter can only be used in ONE word total)
+    // Get the IDs of letters that were used in this word
+    const usedLetterIds = currentWordLetters.map((l) => l.id);
+
+    // Generate new random letters to replace the used ones
+    const newLetters = generateRandomLetters(usedLetterIds.length);
+
+    // Replace used letters with new random letters in the pool
+    // Each used letter gets replaced with a fresh letter in the same position
+    let newLetterIndex = 0;
+    setLetterPool((prev) =>
+      prev.map((poolLetter) => {
+        if (usedLetterIds.includes(poolLetter.id)) {
+          // This letter was used - replace it with a new random letter
+          const replacementLetter = newLetters[newLetterIndex];
+          newLetterIndex++;
+          return {
+            ...poolLetter,
+            letter: replacementLetter,
+            isUsed: false, // New letter is available
+          };
+        }
+        return poolLetter;
+      })
+    );
+
+    // Clear the current word selection
     setCurrentWordLetters([]);
 
     // Pleasant vibration for success

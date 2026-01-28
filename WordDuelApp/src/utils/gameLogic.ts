@@ -131,6 +131,18 @@ export function generateLetterPool(count: number = 16): string[] {
 }
 
 /**
+ * Generates random replacement letters.
+ * Use this when letters are consumed after a word is submitted.
+ *
+ * @param count - How many letters to generate
+ * @returns An array of random letters
+ */
+export function generateRandomLetters(count: number): string[] {
+  const bag = shuffleArray(createLetterBag());
+  return bag.slice(0, count);
+}
+
+/**
  * Calculates the score for a word based on its length.
  *
  * Scoring system:
