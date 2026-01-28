@@ -1,0 +1,62 @@
+# Dependencies
+node_modules/
+
+# React Native
+.expo/
+*.hbc
+
+# Android
+WordDuelApp/android/app/build/
+WordDuelApp/android/build/
+WordDuelApp/android/.gradle/
+WordDuelApp/android/.cxx/
+*.apk
+*.aab
+*.keystore
+!debug.keystore
+local.properties
+
+# iOS
+WordDuelApp/ios/Pods/
+WordDuelApp/ios/build/
+*.xcworkspace
+*.xcuserdata
+*.ipa
+
+# Metro
+.metro-health-check*
+
+# Testing
+coverage/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables (never commit secrets!)
+.env
+.env.local
+.env.production
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+build/
+
+# Solana
+program/target/
+.anchor/
+
+# Gradle
+.gradle/
