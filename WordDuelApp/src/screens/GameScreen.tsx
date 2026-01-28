@@ -6,10 +6,10 @@
  * - A pool of letter tiles to tap
  * - Their current word being formed
  * - A list of words they've already made
- * - Their score
+ * - Their score (and opponent's score in multiplayer)
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -17,6 +17,7 @@ import {
   TouchableOpacity,
   FlatList,
   Vibration,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -24,8 +25,15 @@ import { RouteProp } from '@react-navigation/native';
 
 // Import our utility functions
 import { generateLetterPool, generateRandomLetters, calculateScore } from '../utils/gameLogic';
-import { isValidWord } from '../utils/dictionary';
+import { isValidWord, preloadDictionary } from '../utils/dictionary';
 import LetterTile from '../components/LetterTile';
+
+// Import multiplayer service for real-time sync
+import {
+  multiplayerService,
+  GameRoom,
+  PlayerState,
+} from '../services/multiplayer';
 
 // ============================================================
 // TYPES
@@ -54,8 +62,26 @@ interface SubmittedWord {
 // ============================================================
 
 export default function GameScreen({ navigation, route }: GameScreenProps) {
-  // Get parameters passed from the Home Screen
-  const { betAmount = 0, isPractice = true } = route.params || {};
+  // Get parameters passed from the Home/Matchmaking Screen
+  const {
+    betAmount = 0,
+    isPractice = true,
+    isMultiplayer = false,
+    gameRoomId = null,
+    playerId = null,
+    letters: sharedLetters = null,
+    opponentName = 'Opponent',
+  } = route.params || {};
+
+  // --------------------------------------------------------
+  // MULTIPLAYER STATE
+  // --------------------------------------------------------
+
+  // Opponent's score (updated in real-time from Firebase)
+  const [opponentState, setOpponentState] = useState<PlayerState | null>(null);
+
+  // Cleanup function for Firebase listener
+  const gameCleanupRef = useRef<(() => void) | null>(null);
 
   // --------------------------------------------------------
   // STATE - All the data that can change during the game
@@ -82,55 +108,171 @@ export default function GameScreen({ navigation, route }: GameScreenProps) {
   // Feedback message (like "Nice!" or "Not a word")
   const [feedback, setFeedback] = useState<string | null>(null);
 
+  // Track if we've already ended the game (to prevent double-ending)
+  const gameEndedRef = useRef(false);
+
+  // --------------------------------------------------------
+  // PRELOAD DICTIONARY - Load word list before user can submit
+  // --------------------------------------------------------
+
+  useEffect(() => {
+    // Preload the dictionary immediately when game screen mounts
+    // This prevents a 3-second freeze on first word submission
+    preloadDictionary();
+  }, []);
+
   // --------------------------------------------------------
   // INITIALIZE GAME - Set up letters when screen loads
   // --------------------------------------------------------
 
   useEffect(() => {
-    // Generate 16 random letters (like Boggle)
-    const letters = generateLetterPool(16);
+    // In multiplayer mode, use the shared letters from Firebase
+    // In practice mode, generate random letters locally
+    const letters = isMultiplayer && sharedLetters
+      ? sharedLetters
+      : generateLetterPool(16);
 
     // Convert to our PoolLetter format with IDs
-    const poolWithIds: PoolLetter[] = letters.map((letter, index) => ({
+    const poolWithIds: PoolLetter[] = letters.map((letter: string, index: number) => ({
       id: `letter-${index}`,
       letter: letter,
       isUsed: false,
     }));
 
     setLetterPool(poolWithIds);
-  }, []);
+  }, [isMultiplayer, sharedLetters]);
 
   // --------------------------------------------------------
-  // TIMER - Count down every second
+  // MULTIPLAYER SYNC - Subscribe to opponent's score updates
   // --------------------------------------------------------
+
+  // Store game start time for synchronized timer
+  const gameStartTimeRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!isGameActive || timeLeft <= 0) {
-      if (timeLeft <= 0) {
-        // Time's up! End the game
-        setIsGameActive(false);
+    if (!isMultiplayer || !gameRoomId || !playerId) return;
 
-        // Navigate to results after a short delay
+    // Subscribe to game room updates
+    const cleanup = multiplayerService.joinGame(
+      gameRoomId,
+      playerId,
+      (game: GameRoom) => {
+        // Store game start time for timer sync
+        if (game.startedAt && !gameStartTimeRef.current) {
+          gameStartTimeRef.current = game.startedAt;
+        }
+
+        // Find the opponent's state (the player that isn't us)
+        const isPlayer1 = game.player1?.odid === playerId;
+        const opponent = isPlayer1 ? game.player2 : game.player1;
+        if (opponent) {
+          setOpponentState(opponent);
+        }
+      }
+    );
+
+    gameCleanupRef.current = cleanup;
+
+    // Cleanup on unmount
+    return () => {
+      if (gameCleanupRef.current) {
+        gameCleanupRef.current();
+        gameCleanupRef.current = null;
+      }
+    };
+  }, [isMultiplayer, gameRoomId, playerId]);
+
+  // --------------------------------------------------------
+  // TIMER - Count down every second (synchronized for multiplayer)
+  // --------------------------------------------------------
+
+  const GAME_DURATION = 60; // seconds
+
+  useEffect(() => {
+    if (!isGameActive) return;
+
+    // Set up a timer that ticks every second
+    const timer = setInterval(() => {
+      if (isMultiplayer && gameStartTimeRef.current) {
+        // Multiplayer: Calculate time based on server start time for sync
+        const elapsed = Math.floor((Date.now() - gameStartTimeRef.current) / 1000);
+        const remaining = Math.max(0, GAME_DURATION - elapsed);
+        setTimeLeft(remaining);
+      } else {
+        // Practice mode: Simple countdown
+        setTimeLeft((prev) => Math.max(0, prev - 1));
+      }
+    }, 1000);
+
+    // Clean up the timer when component unmounts
+    return () => clearInterval(timer);
+  }, [isGameActive, isMultiplayer]);
+
+  // Handle game end when timer reaches 0
+  useEffect(() => {
+    if (timeLeft > 0 || !isGameActive || gameEndedRef.current) return;
+
+    // Time's up! End the game (only once)
+    gameEndedRef.current = true;
+    setIsGameActive(false);
+
+    // Handle game end differently for multiplayer vs practice
+    const handleGameEnd = async () => {
+      if (isMultiplayer && gameRoomId) {
+        // End the game in Firebase and get final results
+        const finalGame = await multiplayerService.endGame(gameRoomId);
+
+        // Clean up Firebase listener
+        if (gameCleanupRef.current) {
+          gameCleanupRef.current();
+          gameCleanupRef.current = null;
+        }
+
+        // Use Firebase data for authoritative scores
+        let finalOpponentScore = 0;
+        let finalMyScore = totalScore;
+
+        if (finalGame) {
+          const isPlayer1 = finalGame.player1?.odid === playerId;
+          const myState = isPlayer1 ? finalGame.player1 : finalGame.player2;
+          const oppState = isPlayer1 ? finalGame.player2 : finalGame.player1;
+          finalMyScore = myState?.score || totalScore;
+          finalOpponentScore = oppState?.score || 0;
+        }
+
+        const didWin = finalMyScore > finalOpponentScore;
+        const isTie = finalMyScore === finalOpponentScore;
+        const prizeWon = didWin ? betAmount * 2 * 0.95 : 0; // 95% to winner
+
+        // Navigate to results
+        setTimeout(() => {
+          navigation.replace('Results', {
+            score: finalMyScore,
+            words: submittedWords,
+            betAmount,
+            isPractice: false,
+            playerId,
+            opponentScore: finalOpponentScore,
+            opponentName,
+            didWin: isTie ? null : didWin,
+            prizeWon: isTie ? null : prizeWon,
+          });
+        }, 1500);
+      } else {
+        // Practice mode - simple navigation
         setTimeout(() => {
           navigation.replace('Results', {
             score: totalScore,
             words: submittedWords,
             betAmount,
-            isPractice,
+            isPractice: true,
           });
         }, 1500);
       }
-      return;
-    }
+    };
 
-    // Set up a timer that ticks every second
-    const timer = setInterval(() => {
-      setTimeLeft((prev) => prev - 1);
-    }, 1000);
-
-    // Clean up the timer when component unmounts
-    return () => clearInterval(timer);
-  }, [isGameActive, timeLeft, navigation, totalScore, submittedWords, betAmount, isPractice]);
+    handleGameEnd();
+  }, [timeLeft, isGameActive, isMultiplayer, gameRoomId, playerId, totalScore, submittedWords, betAmount, opponentName, navigation]);
 
   // --------------------------------------------------------
   // GAME ACTIONS
@@ -193,6 +335,9 @@ export default function GameScreen({ navigation, route }: GameScreenProps) {
 
   // Submit the current word
   const handleSubmit = useCallback(() => {
+    const t0 = Date.now();
+    console.log('[TIMING] handleSubmit START');
+
     // Need at least 3 letters
     if (currentWordLetters.length < 3) {
       setFeedback('Need 3+ letters');
@@ -202,6 +347,7 @@ export default function GameScreen({ navigation, route }: GameScreenProps) {
 
     // Build the word string
     const word = currentWordLetters.map((l) => l.letter).join('');
+    console.log('[TIMING] Word built:', Date.now() - t0, 'ms');
 
     // Check if already submitted
     if (submittedWords.some((w) => w.word === word)) {
@@ -209,25 +355,40 @@ export default function GameScreen({ navigation, route }: GameScreenProps) {
       Vibration.vibrate(100);
       return;
     }
+    console.log('[TIMING] Duplicate check:', Date.now() - t0, 'ms');
 
     // Check if it's a valid English word
-    if (!isValidWord(word)) {
+    const validStart = Date.now();
+    const isValid = isValidWord(word);
+    console.log('[TIMING] isValidWord took:', Date.now() - validStart, 'ms');
+    if (!isValid) {
       setFeedback('Not a word');
       Vibration.vibrate(100);
       return;
     }
+    console.log('[TIMING] After validation:', Date.now() - t0, 'ms');
 
     // Calculate the score for this word
     const wordScore = calculateScore(word);
+    console.log('[TIMING] Score calculated:', Date.now() - t0, 'ms');
 
     // Add to submitted words
     setSubmittedWords((prev) => [...prev, { word, score: wordScore }]);
 
     // Update total score
     setTotalScore((prev) => prev + wordScore);
+    console.log('[TIMING] State updated:', Date.now() - t0, 'ms');
+
+    // In multiplayer mode, sync the word with Firebase
+    if (isMultiplayer && gameRoomId && playerId) {
+      console.log('[TIMING] About to call Firebase submitWord');
+      multiplayerService.submitWord(gameRoomId, playerId, word, wordScore);
+      console.log('[TIMING] Firebase call initiated:', Date.now() - t0, 'ms');
+    }
 
     // Show success feedback
     setFeedback(`+${wordScore} points!`);
+    console.log('[TIMING] handleSubmit END:', Date.now() - t0, 'ms');
 
     // Get the IDs of letters that were used in this word
     const usedLetterIds = currentWordLetters.map((l) => l.id);
@@ -262,6 +423,57 @@ export default function GameScreen({ navigation, route }: GameScreenProps) {
   }, [currentWordLetters, submittedWords]);
 
   // --------------------------------------------------------
+  // QUIT GAME
+  // --------------------------------------------------------
+
+  const handleQuit = useCallback(() => {
+    if (isMultiplayer) {
+      // Multiplayer: Warn about forfeiting wager
+      Alert.alert(
+        'Forfeit Match?',
+        `If you quit now, you will forfeit your ${betAmount} SOL wager and your opponent will win.`,
+        [
+          {
+            text: 'Keep Playing',
+            style: 'cancel',
+          },
+          {
+            text: 'Forfeit & Quit',
+            style: 'destructive',
+            onPress: () => {
+              // Clean up Firebase listener
+              if (gameCleanupRef.current) {
+                gameCleanupRef.current();
+                gameCleanupRef.current = null;
+              }
+              // Navigate back to home
+              navigation.replace('Home');
+            },
+          },
+        ]
+      );
+    } else {
+      // Practice mode: Simple confirmation
+      Alert.alert(
+        'Quit Practice?',
+        'Are you sure you want to end this practice game?',
+        [
+          {
+            text: 'Keep Playing',
+            style: 'cancel',
+          },
+          {
+            text: 'Quit',
+            onPress: () => {
+              navigation.replace('Home');
+            },
+          },
+        ]
+      );
+    }
+  }, [isMultiplayer, betAmount, navigation]);
+
+  // --------------------------------------------------------
   // COMPUTED VALUES
   // --------------------------------------------------------
 
@@ -279,8 +491,20 @@ export default function GameScreen({ navigation, route }: GameScreenProps) {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Top bar: Timer and Score */}
+      {/* Quit button in top-left corner */}
+      <TouchableOpacity style={styles.quitButton} onPress={handleQuit}>
+        <Text style={styles.quitButtonText}>✕</Text>
+      </TouchableOpacity>
+
+      {/* Top bar: Timer and Scores */}
       <View style={styles.topBar}>
+        {/* Your Score */}
+        <View style={styles.scoreContainer}>
+          <Text style={styles.scoreLabel}>You</Text>
+          <Text style={styles.score}>{totalScore}</Text>
+        </View>
+
+        {/* Timer in the middle */}
         <View style={styles.timerContainer}>
           <Text style={styles.timerLabel}>Time</Text>
           <Text style={[styles.timer, timeLeft <= 10 && styles.timerUrgent]}>
@@ -288,10 +512,18 @@ export default function GameScreen({ navigation, route }: GameScreenProps) {
           </Text>
         </View>
 
-        <View style={styles.scoreContainer}>
-          <Text style={styles.scoreLabel}>Score</Text>
-          <Text style={styles.score}>{totalScore}</Text>
-        </View>
+        {/* Opponent's Score (only in multiplayer) */}
+        {isMultiplayer ? (
+          <View style={styles.scoreContainer}>
+            <Text style={styles.opponentLabel}>{opponentName.slice(0, 8)}</Text>
+            <Text style={styles.opponentScore}>{opponentState?.score || 0}</Text>
+          </View>
+        ) : (
+          <View style={styles.scoreContainer}>
+            <Text style={styles.scoreLabel}>Best</Text>
+            <Text style={styles.practiceScore}>-</Text>
+          </View>
+        )}
       </View>
 
       {/* Current word being formed */}
@@ -393,6 +625,25 @@ const styles = StyleSheet.create({
     padding: 16,
   },
 
+  // Quit button (top-right corner)
+  quitButton: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(127, 29, 29, 0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  quitButtonText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+
   // Top bar
   topBar: {
     flexDirection: 'row',
@@ -417,6 +668,7 @@ const styles = StyleSheet.create({
   },
   scoreContainer: {
     alignItems: 'center',
+    minWidth: 80,
   },
   scoreLabel: {
     color: '#9ca3af',
@@ -424,6 +676,20 @@ const styles = StyleSheet.create({
   },
   score: {
     color: '#22c55e',
+    fontSize: 36,
+    fontWeight: 'bold',
+  },
+  opponentLabel: {
+    color: '#9ca3af',
+    fontSize: 14,
+  },
+  opponentScore: {
+    color: '#ef4444',
+    fontSize: 36,
+    fontWeight: 'bold',
+  },
+  practiceScore: {
+    color: '#6b7280',
     fontSize: 36,
     fontWeight: 'bold',
   },

@@ -45,8 +45,10 @@ export default function ResultsScreen({ navigation, route }: ResultsScreenProps)
     words = [],
     betAmount = 0,
     isPractice = true,
-    // These will be used later for multiplayer
+    playerId = null,
+    // Multiplayer results
     opponentScore = null,
+    opponentName = 'Opponent',
     didWin = null,
     prizeWon = null,
   } = route.params || {};
@@ -71,10 +73,19 @@ export default function ResultsScreen({ navigation, route }: ResultsScreenProps)
 
   // Handle play again button
   const handlePlayAgain = () => {
-    navigation.replace('Game', {
-      betAmount,
-      isPractice,
-    });
+    if (isPractice) {
+      // Practice mode - go directly to game
+      navigation.replace('Game', {
+        betAmount: 0,
+        isPractice: true,
+      });
+    } else {
+      // Multiplayer mode - go to matchmaking to find new opponent
+      navigation.replace('Matchmaking', {
+        playerId,
+        betAmount,
+      });
+    }
   };
 
   // Handle return to home
@@ -91,7 +102,13 @@ export default function ResultsScreen({ navigation, route }: ResultsScreenProps)
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.gameOverTitle}>
-          {isPractice ? 'Practice Complete!' : 'Game Over!'}
+          {isPractice
+            ? 'Practice Complete!'
+            : didWin === null
+              ? "It's a Tie!"
+              : didWin
+                ? 'You Won!'
+                : 'Game Over'}
         </Text>
       </View>
 
@@ -100,11 +117,14 @@ export default function ResultsScreen({ navigation, route }: ResultsScreenProps)
         <Text style={styles.scoreLabel}>Your Score</Text>
         <Text style={styles.scoreValue}>{score}</Text>
 
-        {/* Multiplayer results (will be used later) */}
+        {/* Multiplayer results */}
         {opponentScore !== null && (
           <View style={styles.vsContainer}>
             <Text style={styles.vsText}>vs</Text>
-            <Text style={styles.opponentScore}>{opponentScore}</Text>
+            <View style={styles.opponentScoreContainer}>
+              <Text style={styles.opponentName}>{opponentName}</Text>
+              <Text style={styles.opponentScore}>{opponentScore}</Text>
+            </View>
           </View>
         )}
 
@@ -176,7 +196,9 @@ export default function ResultsScreen({ navigation, route }: ResultsScreenProps)
           style={[styles.button, styles.playAgainButton]}
           onPress={handlePlayAgain}
         >
-          <Text style={styles.buttonText}>Play Again</Text>
+          <Text style={styles.buttonText}>
+            {isPractice ? 'Play Again' : 'Find New Match'}
+          </Text>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -235,6 +257,14 @@ const styles = StyleSheet.create({
     fontSize: 18,
     color: '#6b7280',
     marginHorizontal: 16,
+  },
+  opponentScoreContainer: {
+    alignItems: 'center',
+  },
+  opponentName: {
+    fontSize: 12,
+    color: '#9ca3af',
+    marginBottom: 4,
   },
   opponentScore: {
     fontSize: 36,

@@ -4,11 +4,12 @@
  * This is the main menu of Word Duel. From here, players can:
  * - Connect their Solana wallet
  * - See their SOL balance
+ * - Choose bet amount and currency (SOL or USDC)
  * - Start finding a match
- * - Practice solo (coming later)
+ * - Practice solo
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -21,6 +22,15 @@ import { useWallet } from '../hooks/useWallet';
 
 // For navigation between screens
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+
+// Bet currency type
+type BetCurrency = 'SOL' | 'USDC';
+
+// Available bet amounts for each currency
+const BET_OPTIONS = {
+  SOL: [0.01, 0.05, 0.1],
+  USDC: [1, 5, 10],
+};
 
 type HomeScreenProps = {
   navigation: NativeStackNavigationProp<any>;
@@ -39,6 +49,10 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
     error,
   } = useWallet();
 
+  // Bet configuration state
+  const [betCurrency, setBetCurrency] = useState<BetCurrency>('SOL');
+  const [betAmount, setBetAmount] = useState(BET_OPTIONS.SOL[0]);
+
   // --------------------------------------------------------
   // HELPER FUNCTIONS
   // --------------------------------------------------------
@@ -49,14 +63,20 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
     return `${address.slice(0, 8)}...${address.slice(-4)}`;
   };
 
+  // Handle currency change
+  const handleCurrencyChange = (currency: BetCurrency) => {
+    setBetCurrency(currency);
+    // Reset to first bet option for the new currency
+    setBetAmount(BET_OPTIONS[currency][0]);
+  };
+
   // Handle the "Find Match" button press
   const handleFindMatch = () => {
-    // For now, go directly to the game screen
-    // Later, this will first find an opponent through Firebase
-    navigation.navigate('Game', {
-      // Pass any data the game screen needs
-      betAmount: 0.01, // SOL
-      isPractice: false,
+    // Navigate to matchmaking to find an opponent
+    navigation.navigate('Matchmaking', {
+      playerId: publicKey?.toString(), // Wallet address as player ID
+      betAmount,
+      betCurrency,
     });
   };
 
@@ -139,6 +159,71 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
         )}
       </View>
 
+      {/* Bet Configuration - only show when connected */}
+      {isConnected && (
+        <View style={styles.betSection}>
+          {/* Currency Toggle */}
+          <View style={styles.currencyToggle}>
+            <TouchableOpacity
+              style={[
+                styles.currencyButton,
+                betCurrency === 'SOL' && styles.currencyButtonActive,
+              ]}
+              onPress={() => handleCurrencyChange('SOL')}
+            >
+              <Text
+                style={[
+                  styles.currencyButtonText,
+                  betCurrency === 'SOL' && styles.currencyButtonTextActive,
+                ]}
+              >
+                SOL
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.currencyButton,
+                betCurrency === 'USDC' && styles.currencyButtonActive,
+              ]}
+              onPress={() => handleCurrencyChange('USDC')}
+            >
+              <Text
+                style={[
+                  styles.currencyButtonText,
+                  betCurrency === 'USDC' && styles.currencyButtonTextActive,
+                ]}
+              >
+                USDC
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Bet Amount Selection */}
+          <Text style={styles.betLabel}>Wager Amount</Text>
+          <View style={styles.betOptions}>
+            {BET_OPTIONS[betCurrency].map((amount) => (
+              <TouchableOpacity
+                key={amount}
+                style={[
+                  styles.betOption,
+                  betAmount === amount && styles.betOptionActive,
+                ]}
+                onPress={() => setBetAmount(amount)}
+              >
+                <Text
+                  style={[
+                    styles.betOptionText,
+                    betAmount === amount && styles.betOptionTextActive,
+                  ]}
+                >
+                  {amount} {betCurrency}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+      )}
+
       {/* Game Actions */}
       <View style={styles.actionsSection}>
         {/* Find Match Button - only works when wallet is connected */}
@@ -152,7 +237,9 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
           disabled={!isConnected}
         >
           <Text style={styles.actionButtonText}>Find Match</Text>
-          <Text style={styles.actionButtonSubtext}>0.01 SOL entry</Text>
+          <Text style={styles.actionButtonSubtext}>
+            {betAmount} {betCurrency} entry
+          </Text>
         </TouchableOpacity>
 
         {/* Practice Button - works even without wallet */}
@@ -284,6 +371,70 @@ const styles = StyleSheet.create({
     color: '#ef4444', // Red
     marginTop: 12,
     textAlign: 'center',
+  },
+
+  // Bet configuration styles
+  betSection: {
+    backgroundColor: '#16213e',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 20,
+  },
+  currencyToggle: {
+    flexDirection: 'row',
+    backgroundColor: '#1f2937',
+    borderRadius: 8,
+    padding: 4,
+    marginBottom: 16,
+  },
+  currencyButton: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderRadius: 6,
+  },
+  currencyButtonActive: {
+    backgroundColor: '#7c3aed',
+  },
+  currencyButtonText: {
+    color: '#9ca3af',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  currencyButtonTextActive: {
+    color: '#ffffff',
+  },
+  betLabel: {
+    color: '#9ca3af',
+    fontSize: 14,
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  betOptions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  betOption: {
+    flex: 1,
+    backgroundColor: '#1f2937',
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  betOptionActive: {
+    borderColor: '#22c55e',
+    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+  },
+  betOptionText: {
+    color: '#9ca3af',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  betOptionTextActive: {
+    color: '#22c55e',
   },
 
   // Action buttons styles

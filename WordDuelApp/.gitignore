@@ -73,3 +73,13 @@ yarn-error.log
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+# Escrow secrets (NEVER commit these!)
+ESCROW_SECRETS.md
+*.secret
+.env.local
+functions/.env
+
+# Firebase sensitive config
+google-services.json
+GoogleService-Info.plist

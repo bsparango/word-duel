@@ -6,14 +6,18 @@
  * - The wallet connection provider (lets any screen access wallet info)
  */
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import { StatusBar } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+// Preload dictionary at app startup to prevent game freezes
+import { preloadDictionary } from './utils/dictionary';
+
 // Import our screens (the different "pages" of the app)
 import HomeScreen from './screens/HomeScreen';
+import MatchmakingScreen from './screens/MatchmakingScreen';
 import GameScreen from './screens/GameScreen';
 import ResultsScreen from './screens/ResultsScreen';
 
@@ -25,6 +29,12 @@ import { WalletProvider } from './hooks/useWallet';
 const Stack = createNativeStackNavigator();
 
 export default function App() {
+  // Start loading the dictionary as soon as the app launches
+  // This runs in the background and prevents freezes during gameplay
+  useEffect(() => {
+    preloadDictionary();
+  }, []);
+
   return (
     // SafeAreaProvider ensures content doesn't overlap with phone notches/edges
     <SafeAreaProvider>
@@ -49,6 +59,14 @@ export default function App() {
               name="Home"
               component={HomeScreen}
               options={{ title: 'Word Duel' }}
+            />
+            <Stack.Screen
+              name="Matchmaking"
+              component={MatchmakingScreen}
+              options={{
+                title: 'Finding Match',
+                headerBackVisible: false,
+              }}
             />
             <Stack.Screen
               name="Game"

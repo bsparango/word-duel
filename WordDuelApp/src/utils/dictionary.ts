@@ -3,24 +3,24 @@
  *
  * Handles word validation - checking if a word is a real English word.
  * Uses a comprehensive dictionary of ~275,000 English words.
+ *
+ * The dictionary is loaded asynchronously to prevent UI freezes.
  */
 
 // Import the comprehensive English word list
 import words from 'an-array-of-english-words';
 
 // ============================================================
-// WORD SET
+// WORD SET (Lazy loaded)
 // ============================================================
 
 /**
  * A Set of valid English words for O(1) lookup time.
- * Contains approximately 275,000 words including:
- * - Common words (the, and, is, etc.)
- * - Past tenses (paired, walked, jumped)
- * - Plurals (cats, dogs, houses)
- * - Proper English words of all kinds
+ * Loaded asynchronously to prevent UI freezes.
  */
-const VALID_WORDS: Set<string> = new Set(words);
+let VALID_WORDS: Set<string> | null = null;
+let isLoading = false;
+let loadPromise: Promise<void> | null = null;
 
 // ============================================================
 // PUBLIC FUNCTIONS
@@ -46,6 +46,12 @@ export function isValidWord(word: string): boolean {
     return false;
   }
 
+  // If dictionary isn't loaded yet, load it synchronously (fallback)
+  if (!VALID_WORDS) {
+    console.log('[Dictionary] Loading synchronously (not preloaded)');
+    VALID_WORDS = new Set(words);
+  }
+
   // Check if it's in our dictionary
   return VALID_WORDS.has(lowercaseWord);
 }
@@ -58,6 +64,11 @@ export function isValidWord(word: string): boolean {
  * @returns Array of valid words that can be formed
  */
 export function findPossibleWords(letters: string[]): string[] {
+  if (!VALID_WORDS) {
+    console.log('[Dictionary] Not loaded yet for findPossibleWords');
+    return [];
+  }
+
   const availableLetters = letters.map((l) => l.toLowerCase());
   const possibleWords: string[] = [];
 
@@ -102,5 +113,63 @@ function canFormWord(word: string, available: string[]): boolean {
  * Useful for displaying stats.
  */
 export function getDictionarySize(): number {
-  return VALID_WORDS.size;
+  return VALID_WORDS?.size || 0;
+}
+
+/**
+ * Pre-loads the dictionary into memory using InteractionManager.
+ * Call this early (e.g., when app starts or matchmaking screen loads)
+ * to avoid a freeze on the first word validation.
+ *
+ * The dictionary is loaded in chunks to prevent UI blocking.
+ *
+ * @returns Promise that resolves when dictionary is ready
+ */
+export function preloadDictionary(): Promise<number> {
+  // If already loaded, return immediately
+  if (VALID_WORDS) {
+    return Promise.resolve(VALID_WORDS.size);
+  }
+
+  // If already loading, return the existing promise
+  if (loadPromise) {
+    return loadPromise.then(() => VALID_WORDS?.size || 0);
+  }
+
+  // Start loading
+  isLoading = true;
+  console.log('[Dictionary] Starting async preload...');
+
+  loadPromise = new Promise((resolve) => {
+    // Use requestAnimationFrame to defer loading until after render
+    requestAnimationFrame(() => {
+      // Load in batches to keep UI responsive
+      const batchSize = 50000;
+      const tempSet = new Set<string>();
+      let index = 0;
+
+      const loadBatch = () => {
+        const end = Math.min(index + batchSize, words.length);
+        for (let i = index; i < end; i++) {
+          tempSet.add(words[i]);
+        }
+        index = end;
+
+        if (index < words.length) {
+          // More batches to load - schedule next batch
+          setTimeout(loadBatch, 0);
+        } else {
+          // Done loading
+          VALID_WORDS = tempSet;
+          isLoading = false;
+          console.log(`[Dictionary] Preloaded ${VALID_WORDS.size} words`);
+          resolve();
+        }
+      };
+
+      loadBatch();
+    });
+  });
+
+  return loadPromise.then(() => VALID_WORDS?.size || 0);
 }

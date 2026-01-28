@@ -9,6 +9,7 @@
  */
 
 import React, { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import { Platform } from 'react-native';
 import {
   transact,
   Web3MobileWallet,
@@ -18,6 +19,10 @@ import { Connection, PublicKey, Transaction, clusterApiUrl } from '@solana/web3.
 // The Solana network we're connecting to (devnet = fake money for testing)
 const SOLANA_NETWORK = 'devnet';
 const CONNECTION = new Connection(clusterApiUrl(SOLANA_NETWORK), 'confirmed');
+
+// Test wallet address for emulator fallback (when no real wallet is available)
+// This is a valid Solana address format (System Program address - safe for testing)
+const TEST_WALLET_ADDRESS = '11111111111111111111111111111111';
 
 // App identity - tells the wallet what app is requesting connection
 const APP_IDENTITY = {
@@ -103,7 +108,47 @@ export function WalletProvider({ children }: WalletProviderProps) {
         });
 
         // Get the wallet's public address (like an account number)
-        const walletPublicKey = new PublicKey(authorizationResult.accounts[0].address);
+        // The Seed Vault returns the address as a Base64 encoded string,
+        // while other wallets might return Base58 or raw bytes.
+        const addressData = authorizationResult.accounts[0].address;
+        let walletPublicKey: PublicKey;
+
+        if (addressData instanceof Uint8Array) {
+          // Raw byte array - create PublicKey directly
+          walletPublicKey = new PublicKey(addressData);
+        } else if (typeof addressData === 'string') {
+          const trimmedAddress = addressData.trim();
+
+          // Check if it's Base64 encoded (contains chars not in Base58, or has padding)
+          // Base64 uses: A-Z, a-z, 0-9, +, /, =
+          // Base58 uses: A-Z, a-z, 0-9 (excluding 0, O, I, l)
+          // So if we see +, /, or = it's definitely Base64
+          const isBase64 = /[+/=]/.test(trimmedAddress);
+
+          if (isBase64) {
+            // Decode Base64 to bytes, then create PublicKey
+            // Using atob for Base64 decoding (available in React Native)
+            const binaryString = atob(trimmedAddress);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+              bytes[i] = binaryString.charCodeAt(i);
+            }
+            walletPublicKey = new PublicKey(bytes);
+          } else {
+            // Assume it's a Base58 string
+            walletPublicKey = new PublicKey(trimmedAddress);
+          }
+        } else if (Array.isArray(addressData)) {
+          // Regular number array - convert to Uint8Array
+          walletPublicKey = new PublicKey(new Uint8Array(addressData));
+        } else if (typeof addressData === 'object' && addressData !== null) {
+          // Object with numeric keys - convert to array
+          const values = Object.values(addressData) as number[];
+          walletPublicKey = new PublicKey(new Uint8Array(values));
+        } else {
+          throw new Error(`Unexpected address format: ${typeof addressData}`);
+        }
+
         setPublicKey(walletPublicKey);
 
         // Fetch the wallet's SOL balance
@@ -112,9 +157,19 @@ export function WalletProvider({ children }: WalletProviderProps) {
         setBalance(balanceLamports / 1_000_000_000);
       });
     } catch (err: any) {
-      // Something went wrong - save the error message
-      console.error('Wallet connection error:', err);
-      setError(err.message || 'Failed to connect wallet');
+      // Check if this is a "no wallet found" error (common on emulator)
+      // In dev mode, fall back to test wallet for easier testing
+      if (__DEV__ && err.code === 'ERROR_WALLET_NOT_FOUND') {
+        console.log('No wallet found - using test wallet for development');
+        const testPublicKey = new PublicKey(TEST_WALLET_ADDRESS);
+        setPublicKey(testPublicKey);
+        setBalance(1.5); // Fake balance for testing
+        setError(null);
+      } else {
+        // Something went wrong - save the error message
+        console.error('Wallet connection error:', err);
+        setError(err.message || 'Failed to connect wallet');
+      }
     } finally {
       setIsConnecting(false);
     }
