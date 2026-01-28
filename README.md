@@ -1,6 +1,6 @@
 # Word Duel
 
-A fast-paced competitive word game for Solana Mobile Seeker with blockchain betting.
+A fast-paced competitive word game for Solana Mobile Seeker.
 
 ## What is Word Duel?
 
