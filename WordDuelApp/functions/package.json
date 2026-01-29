@@ -10,7 +10,11 @@
     "shell": "npm run build && firebase functions:shell",
     "start": "npm run shell",
     "deploy": "firebase deploy --only functions",
-    "logs": "firebase functions:log"
+    "logs": "firebase functions:log",
+    "test-player": "ts-node src/test-player.ts",
+    "test-player:win": "ts-node src/test-player.ts win",
+    "test-player:lose": "ts-node src/test-player.ts lose",
+    "test-player:tie": "ts-node src/test-player.ts tie"
   },
   "engines": {
     "node": "20"
@@ -24,6 +28,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "ts-node": "^10.9.2",
     "typescript": "^5.3.0"
   },
   "private": true

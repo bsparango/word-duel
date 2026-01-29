@@ -242,7 +242,8 @@ export default function GameScreen({ navigation, route }: GameScreenProps) {
 
         const didWin = finalMyScore > finalOpponentScore;
         const isTie = finalMyScore === finalOpponentScore;
-        const prizeWon = didWin ? betAmount * 2 * 0.95 : 0; // 95% to winner
+        // Prize is the opponent's bet (your profit from winning)
+        const prizeWon = didWin ? betAmount : 0;
 
         // Navigate to results
         setTimeout(() => {

@@ -26,10 +26,10 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 // Bet currency type
 type BetCurrency = 'SOL' | 'USDC';
 
-// Available bet amounts for each currency
-const BET_OPTIONS = {
-  SOL: [0.01, 0.05, 0.1],
-  USDC: [1, 5, 10],
+// Fixed bet amounts for each currency (uniform for all players)
+const FIXED_BET_AMOUNTS = {
+  SOL: 0.01,
+  USDC: 1,
 };
 
 type HomeScreenProps = {
@@ -49,9 +49,10 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
     error,
   } = useWallet();
 
-  // Bet configuration state
+  // Bet configuration state - fixed amounts for fair matchmaking
   const [betCurrency, setBetCurrency] = useState<BetCurrency>('SOL');
-  const [betAmount, setBetAmount] = useState(BET_OPTIONS.SOL[0]);
+  // Amount is derived from currency selection (no custom amounts)
+  const betAmount = FIXED_BET_AMOUNTS[betCurrency];
 
   // --------------------------------------------------------
   // HELPER FUNCTIONS
@@ -63,11 +64,9 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
     return `${address.slice(0, 8)}...${address.slice(-4)}`;
   };
 
-  // Handle currency change
+  // Handle currency change (amount is automatically set based on currency)
   const handleCurrencyChange = (currency: BetCurrency) => {
     setBetCurrency(currency);
-    // Reset to first bet option for the new currency
-    setBetAmount(BET_OPTIONS[currency][0]);
   };
 
   // Handle the "Find Match" button press
@@ -162,6 +161,8 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
       {/* Bet Configuration - only show when connected */}
       {isConnected && (
         <View style={styles.betSection}>
+          <Text style={styles.betSectionTitle}>Select Currency</Text>
+
           {/* Currency Toggle */}
           <View style={styles.currencyToggle}>
             <TouchableOpacity
@@ -179,6 +180,14 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
               >
                 SOL
               </Text>
+              <Text
+                style={[
+                  styles.currencyAmountText,
+                  betCurrency === 'SOL' && styles.currencyAmountTextActive,
+                ]}
+              >
+                0.01 SOL
+              </Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[
@@ -195,31 +204,15 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
               >
                 USDC
               </Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* Bet Amount Selection */}
-          <Text style={styles.betLabel}>Wager Amount</Text>
-          <View style={styles.betOptions}>
-            {BET_OPTIONS[betCurrency].map((amount) => (
-              <TouchableOpacity
-                key={amount}
+              <Text
                 style={[
-                  styles.betOption,
-                  betAmount === amount && styles.betOptionActive,
+                  styles.currencyAmountText,
+                  betCurrency === 'USDC' && styles.currencyAmountTextActive,
                 ]}
-                onPress={() => setBetAmount(amount)}
               >
-                <Text
-                  style={[
-                    styles.betOptionText,
-                    betAmount === amount && styles.betOptionTextActive,
-                  ]}
-                >
-                  {amount} {betCurrency}
-                </Text>
-              </TouchableOpacity>
-            ))}
+                $1 USDC
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
       )}
@@ -277,8 +270,8 @@ const styles = StyleSheet.create({
   // Header styles
   header: {
     alignItems: 'center',
-    marginTop: 20,
-    marginBottom: 30,
+    marginTop: 0,
+    marginBottom: 20,
   },
   title: {
     fontSize: 42,
@@ -297,7 +290,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#16213e', // Slightly lighter dark blue
     borderRadius: 16,
     padding: 20,
-    marginBottom: 30,
+    marginBottom: 16,
   },
   walletInfo: {
     alignItems: 'center',
@@ -378,18 +371,24 @@ const styles = StyleSheet.create({
     backgroundColor: '#16213e',
     borderRadius: 16,
     padding: 16,
-    marginBottom: 20,
+    marginBottom: 16,
+  },
+  betSectionTitle: {
+    color: '#9ca3af',
+    fontSize: 14,
+    marginBottom: 12,
+    textAlign: 'center',
   },
   currencyToggle: {
     flexDirection: 'row',
     backgroundColor: '#1f2937',
     borderRadius: 8,
     padding: 4,
-    marginBottom: 16,
+    gap: 4,
   },
   currencyButton: {
     flex: 1,
-    paddingVertical: 10,
+    paddingVertical: 14,
     alignItems: 'center',
     borderRadius: 6,
   },
@@ -398,49 +397,25 @@ const styles = StyleSheet.create({
   },
   currencyButtonText: {
     color: '#9ca3af',
-    fontSize: 16,
-    fontWeight: '600',
+    fontSize: 18,
+    fontWeight: 'bold',
   },
   currencyButtonTextActive: {
     color: '#ffffff',
   },
-  betLabel: {
-    color: '#9ca3af',
-    fontSize: 14,
-    marginBottom: 8,
-    textAlign: 'center',
+  currencyAmountText: {
+    color: '#6b7280',
+    fontSize: 12,
+    marginTop: 2,
   },
-  betOptions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  betOption: {
-    flex: 1,
-    backgroundColor: '#1f2937',
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  betOptionActive: {
-    borderColor: '#22c55e',
-    backgroundColor: 'rgba(34, 197, 94, 0.1)',
-  },
-  betOptionText: {
-    color: '#9ca3af',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  betOptionTextActive: {
-    color: '#22c55e',
+  currencyAmountTextActive: {
+    color: 'rgba(255, 255, 255, 0.7)',
   },
 
   // Action buttons styles
   actionsSection: {
-    gap: 16,
-    marginBottom: 30,
+    gap: 12,
+    marginBottom: 16,
   },
   actionButton: {
     paddingVertical: 20,
@@ -473,7 +448,7 @@ const styles = StyleSheet.create({
   footer: {
     marginTop: 'auto', // Push to bottom
     alignItems: 'center',
-    paddingBottom: 20,
+    paddingBottom: 10,
   },
   footerText: {
     color: '#6b7280',

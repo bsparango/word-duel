@@ -384,8 +384,8 @@ const styles = StyleSheet.create({
   // Header
   header: {
     alignItems: 'center',
-    marginTop: 20,
-    marginBottom: 20,
+    marginTop: 0,
+    marginBottom: 16,
   },
   title: {
     fontSize: 32,
@@ -403,9 +403,9 @@ const styles = StyleSheet.create({
   betContainer: {
     backgroundColor: '#16213e',
     borderRadius: 16,
-    padding: 20,
+    padding: 16,
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 16,
   },
   betLabel: {
     fontSize: 14,
@@ -428,7 +428,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 30,
+    marginBottom: 20,
     paddingHorizontal: 20,
   },
   step: {
@@ -523,8 +523,8 @@ const styles = StyleSheet.create({
   tipsSection: {
     backgroundColor: '#16213e',
     borderRadius: 12,
-    padding: 16,
-    marginBottom: 20,
+    padding: 14,
+    marginBottom: 12,
   },
   tipsTitle: {
     fontSize: 16,
@@ -541,7 +541,7 @@ const styles = StyleSheet.create({
   // Bottom section
   bottomSection: {
     marginTop: 'auto',
-    paddingBottom: 20,
+    paddingBottom: 10,
   },
   cancelButton: {
     backgroundColor: '#7f1d1d',

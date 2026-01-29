@@ -11,3 +11,7 @@ node_modules/
 # Firebase
 .firebase/
 firebase-debug.log
+
+# Service account credentials (NEVER commit!)
+service-account.json
+*-service-account.json

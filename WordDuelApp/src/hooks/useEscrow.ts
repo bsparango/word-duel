@@ -204,18 +204,13 @@ export function useEscrow(): UseEscrowResult {
    */
   const cancelDeposit = useCallback(async (): Promise<boolean> => {
     if (!lastGameRoomId || !publicKey) {
-      console.log('[useEscrow] No deposit to cancel');
+      console.log('[useEscrow] No deposit to cancel - missing gameRoomId or publicKey');
+      console.log(`[useEscrow] lastGameRoomId: ${lastGameRoomId}, publicKey: ${publicKey?.toString()}`);
       return true; // Nothing to cancel
     }
 
-    // Only cancel if deposit was actually completed
-    if (status !== 'complete') {
-      console.log('[useEscrow] Deposit not complete, nothing to refund');
-      return true;
-    }
-
     try {
-      console.log(`[useEscrow] Cancelling deposit for game ${lastGameRoomId}`);
+      console.log(`[useEscrow] Cancelling deposit for game ${lastGameRoomId}, player ${publicKey.toString()}`);
 
       const cancelMatchmaking = functions().httpsCallable('cancelMatchmaking');
       const result = await cancelMatchmaking({
@@ -239,7 +234,7 @@ export function useEscrow(): UseEscrowResult {
       console.error('[useEscrow] Cancel error:', err);
       return false;
     }
-  }, [lastGameRoomId, publicKey, status]);
+  }, [lastGameRoomId, publicKey]);
 
   /**
    * Reset the escrow state.
