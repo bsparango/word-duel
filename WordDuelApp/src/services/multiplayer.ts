@@ -392,6 +392,42 @@ class MultiplayerService {
   }
 
   /**
+   * Forfeit a game - the forfeiting player loses, opponent wins.
+   * This updates the game state and triggers the payout via Firebase function.
+   */
+  async forfeitGame(gameId: string, forfeitingPlayerId: string): Promise<void> {
+    const gameRef = database().ref(`games/${gameId}`);
+    const snapshot = await gameRef.once('value');
+
+    if (!snapshot.exists()) {
+      console.log('[Forfeit] Game not found:', gameId);
+      return;
+    }
+
+    const game = snapshot.val() as GameRoom;
+
+    // Determine the winner (the player who didn't forfeit)
+    let winner: string;
+    if (game.player1.odid === forfeitingPlayerId) {
+      winner = game.player2?.odid || '';
+    } else {
+      winner = game.player1.odid;
+    }
+
+    console.log('[Forfeit] Player', forfeitingPlayerId, 'forfeiting, winner:', winner);
+
+    // Update game status
+    await gameRef.update({
+      status: 'finished',
+      endedAt: Date.now(),
+      winner,
+      forfeitedBy: forfeitingPlayerId,
+    });
+
+    console.log('[Forfeit] Game updated, payout should be triggered automatically');
+  }
+
+  /**
    * End the game and determine the winner.
    */
   async endGame(gameId: string): Promise<GameRoom | null> {

@@ -72,14 +72,35 @@ interface VerifyDepositData {
 }
 
 /**
+ * Check if a transaction signature has already been used.
+ * Prevents replay attacks where someone reuses an old transaction.
+ */
+async function isSignatureUsed(txSignature: string): Promise<boolean> {
+  const ref = admin.database().ref(`usedSignatures/${txSignature}`);
+  const snapshot = await ref.once('value');
+  return snapshot.exists();
+}
+
+/**
+ * Mark a transaction signature as used.
+ */
+async function markSignatureUsed(txSignature: string, gameRoomId: string, playerId: string): Promise<void> {
+  await admin.database().ref(`usedSignatures/${txSignature}`).set({
+    gameRoomId,
+    playerId,
+    usedAt: Date.now(),
+  });
+}
+
+/**
  * Verify a player's deposit transaction on the Solana blockchain.
  * Called by the mobile app after player signs and sends their deposit.
  *
- * This function:
- * 1. Fetches the transaction from Solana
- * 2. Verifies it sent the correct amount to the escrow wallet
- * 3. Updates Firebase with the verified deposit
- * 4. Checks if both players have deposited (ready to start)
+ * Security checks:
+ * 1. Verify transaction signature hasn't been used before (replay protection)
+ * 2. Verify the sender matches the claimed playerId
+ * 3. Verify it sent the correct amount to the escrow wallet
+ * 4. Update Firebase with the verified deposit
  */
 export const verifyDeposit = functions.https.onCall(
   async (data: VerifyDepositData, context) => {
@@ -89,6 +110,13 @@ export const verifyDeposit = functions.https.onCall(
     console.log(`[verifyDeposit] Player: ${playerId}, TX: ${txSignature}`);
 
     try {
+      // SECURITY CHECK 1: Verify signature hasn't been used before (replay protection)
+      const alreadyUsed = await isSignatureUsed(txSignature);
+      if (alreadyUsed) {
+        console.log('[verifyDeposit] REJECTED: Transaction signature already used');
+        return { success: false, error: 'Transaction has already been used for a deposit' };
+      }
+
       // Get the escrow keypair to know the expected destination
       const escrowKeypair = getEscrowKeypair();
       const escrowAddress = escrowKeypair.publicKey.toString();
@@ -109,14 +137,26 @@ export const verifyDeposit = functions.https.onCall(
 
       console.log('[verifyDeposit] Transaction found, verifying...');
 
+      // Get account keys from the transaction
+      const accountKeys = txInfo.transaction.message.getAccountKeys().staticAccountKeys;
+
+      // SECURITY CHECK 2: Verify the sender (fee payer / first signer) matches the claimed player
+      // The fee payer is always the first account in the transaction
+      const senderAddress = accountKeys[0].toString();
+      if (senderAddress !== playerId) {
+        console.log(`[verifyDeposit] REJECTED: Sender mismatch. Expected ${playerId}, got ${senderAddress}`);
+        return {
+          success: false,
+          error: 'Transaction sender does not match claimed player'
+        };
+      }
+      console.log(`[verifyDeposit] Sender verified: ${senderAddress}`);
+
       // For SOL transfers, check the balance changes
       if (currency === 'SOL') {
         const preBalances = txInfo.meta?.preBalances || [];
         const postBalances = txInfo.meta?.postBalances || [];
 
-        // Get account keys from the transaction
-        const accountKeys =
-          txInfo.transaction.message.getAccountKeys().staticAccountKeys;
         const escrowIndex = accountKeys.findIndex(
           (key) => key.toString() === escrowAddress
         );
@@ -145,7 +185,9 @@ export const verifyDeposit = functions.https.onCall(
           };
         }
 
-        // Deposit verified! Update Firebase
+        // All security checks passed! Mark signature as used and update Firebase
+        await markSignatureUsed(txSignature, gameRoomId, playerId);
+
         await updateDepositInFirebase(
           gameRoomId,
           playerId,
@@ -154,10 +196,10 @@ export const verifyDeposit = functions.https.onCall(
           currency
         );
 
+        console.log('[verifyDeposit] Deposit verified and recorded successfully');
         return { success: true, amountReceived };
       } else {
         // USDC verification (SPL token)
-        // For tokens, we need to check token balance changes
         const preTokenBalances = txInfo.meta?.preTokenBalances || [];
         const postTokenBalances = txInfo.meta?.postTokenBalances || [];
 
@@ -187,6 +229,9 @@ export const verifyDeposit = functions.https.onCall(
         // Convert to smallest units (6 decimals for USDC)
         const amountInSmallestUnit = Math.round(amountReceived * 1_000_000);
 
+        // All security checks passed! Mark signature as used and update Firebase
+        await markSignatureUsed(txSignature, gameRoomId, playerId);
+
         await updateDepositInFirebase(
           gameRoomId,
           playerId,
@@ -195,6 +240,7 @@ export const verifyDeposit = functions.https.onCall(
           currency
         );
 
+        console.log('[verifyDeposit] USDC deposit verified and recorded successfully');
         return { success: true, amountReceived };
       }
     } catch (error: any) {
@@ -314,34 +360,49 @@ export const processGamePayout = functions.database
       if (!winner) {
         console.log('[processGamePayout] Tie game - refunding both players');
 
-        // Refund player 1
+        let player1RefundTx: string | null = null;
+        let player2RefundTx: string | null = null;
+
+        // Refund player 1 (wrap in try-catch so player 2 can still be refunded if this fails)
         if (player1Deposit > 0) {
-          await sendPayout(
-            escrowKeypair,
-            player1.odid,
-            player1Deposit,
-            currency
-          );
+          try {
+            player1RefundTx = await sendPayout(
+              escrowKeypair,
+              player1.odid,
+              player1Deposit,
+              currency
+            );
+            console.log(`[processGamePayout] Player 1 refund complete: ${player1RefundTx}`);
+          } catch (err: any) {
+            console.error(`[processGamePayout] Player 1 refund failed: ${err.message}`);
+          }
         }
 
-        // Refund player 2
+        // Refund player 2 (wrap in try-catch so we can still update Firebase even if this fails)
         if (player2Deposit > 0) {
-          await sendPayout(
-            escrowKeypair,
-            player2.odid,
-            player2Deposit,
-            currency
-          );
+          try {
+            player2RefundTx = await sendPayout(
+              escrowKeypair,
+              player2.odid,
+              player2Deposit,
+              currency
+            );
+            console.log(`[processGamePayout] Player 2 refund complete: ${player2RefundTx}`);
+          } catch (err: any) {
+            console.error(`[processGamePayout] Player 2 refund failed: ${err.message}`);
+          }
         }
 
         // Update Firebase
         await admin.database().ref(`games/${gameId}/escrow`).update({
           status: 'refunded',
           refundedAt: Date.now(),
+          player1RefundTx,
+          player2RefundTx,
         });
 
         console.log('[processGamePayout] Refunds complete');
-        return { refunded: true };
+        return { refunded: true, player1RefundTx, player2RefundTx };
       }
 
       // Pay the winner (100% - no platform fee for now)

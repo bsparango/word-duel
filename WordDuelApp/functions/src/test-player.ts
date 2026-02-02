@@ -8,12 +8,14 @@
  *   npx ts-node src/test-player.ts [outcome]
  *
  * Outcomes:
- *   win  - Test player wins (real player loses)
- *   lose - Test player loses (real player wins)
- *   tie  - Both players tie (both get refunded)
+ *   win    - Test player wins (real player loses)
+ *   lose   - Test player loses (real player wins)
+ *   tie    - Both players tie (both get refunded)
+ *   forfeit - Game stays active so real player can forfeit (test player wins by forfeit)
  *
  * Example:
- *   npx ts-node src/test-player.ts lose   # Real player wins
+ *   npx ts-node src/test-player.ts lose     # Real player wins
+ *   npx ts-node src/test-player.ts forfeit  # Wait for real player to forfeit
  */
 
 import * as admin from 'firebase-admin';
@@ -57,7 +59,11 @@ const TEST_PLAYER = {
 const outcome = process.argv[2] || 'lose'; // Default: real player wins
 console.log(`\n🎮 Test Player Simulator`);
 console.log(`   Outcome mode: ${outcome}`);
-console.log(`   (real player will ${outcome === 'lose' ? 'WIN' : outcome === 'win' ? 'LOSE' : 'TIE'})\n`);
+if (outcome === 'forfeit') {
+  console.log(`   (waiting for real player to FORFEIT - test player will receive payout)\n`);
+} else {
+  console.log(`   (real player will ${outcome === 'lose' ? 'WIN' : outcome === 'win' ? 'LOSE' : 'TIE'})\n`);
+}
 
 /**
  * Letter frequencies based on English language usage (same as app)
@@ -256,9 +262,31 @@ function watchGameState(gameId: string, realPlayerOdid: string) {
       // Also mark escrow as locked (simulating both deposits verified)
       await gameRef.child('escrow/status').set('locked');
 
-      // End game immediately for testing (no race condition with app timer)
-      console.log(`   Ending game immediately for testing...`);
-      setTimeout(() => endGame(gameId, realPlayerOdid), 500); // End after 0.5 seconds
+      if (outcome === 'forfeit') {
+        // In forfeit mode, keep test player active and wait for real player to forfeit
+        console.log(`\n⏳ Forfeit mode: Game is now active!`);
+        console.log(`   Test player is staying in the game.`);
+        console.log(`   Forfeit from your app now - test player will receive the payout.\n`);
+
+        // Keep sending activity updates so test player looks active
+        const activityInterval = setInterval(async () => {
+          const currentGame = (await gameRef.once('value')).val();
+          if (currentGame?.status === 'finished' || currentGame?.status === 'forfeited') {
+            clearInterval(activityInterval);
+            console.log(`\n✅ Game ended! Status: ${currentGame.status}`);
+            if (currentGame.winner) {
+              console.log(`   Winner: ${currentGame.winner}`);
+            }
+            console.log(`\n👋 Test complete! Press Ctrl+C to exit.\n`);
+          } else {
+            await gameRef.child('player2/lastActivity').set(Date.now());
+          }
+        }, 2000);
+      } else {
+        // End game immediately for testing (no race condition with app timer)
+        console.log(`   Ending game immediately for testing...`);
+        setTimeout(() => endGame(gameId, realPlayerOdid), 500); // End after 0.5 seconds
+      }
     }
   });
 }

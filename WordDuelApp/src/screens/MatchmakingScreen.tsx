@@ -2,10 +2,11 @@
  * Matchmaking Screen
  *
  * This screen handles the full flow of entering a match:
- * 1. Deposit funds to escrow (user confirms in wallet)
- * 2. Search for an opponent
- * 3. Wait for both players to be ready
- * 4. Transition to the game
+ * 1. Search for an opponent (no deposit yet)
+ * 2. Match found - show opponent info
+ * 3. Deposit funds to the REAL game room ID
+ * 4. Wait for opponent's deposit
+ * 5. Transition to the game
  */
 
 import React, { useEffect, useState, useCallback } from 'react';
@@ -36,8 +37,8 @@ type MatchmakingScreenProps = {
   route: RouteProp<any>;
 };
 
-// Overall matchmaking phase
-type MatchmakingPhase = 'deposit' | 'searching' | 'matched' | 'starting';
+// Overall matchmaking phase - NEW ORDER: search first, then deposit
+type MatchmakingPhase = 'searching' | 'matched' | 'depositing' | 'waiting_opponent' | 'starting';
 
 // ============================================================
 // MAIN COMPONENT
@@ -55,7 +56,7 @@ export default function MatchmakingScreen({
   } = route.params || {};
 
   // Track the current phase of matchmaking
-  const [phase, setPhase] = useState<MatchmakingPhase>('deposit');
+  const [phase, setPhase] = useState<MatchmakingPhase>('searching');
   const [depositComplete, setDepositComplete] = useState(false);
 
   // Get escrow functions for depositing
@@ -88,79 +89,86 @@ export default function MatchmakingScreen({
   }, []);
 
   // --------------------------------------------------------
-  // DEPOSIT PHASE
+  // PHASE 1: SEARCHING - Start searching immediately
   // --------------------------------------------------------
 
-  // Start deposit when screen loads
   useEffect(() => {
-    if (phase === 'deposit' && escrowStatus === 'idle' && playerId && !depositComplete) {
-      // Auto-start deposit (will prompt wallet)
+    // Start searching when screen loads
+    if (phase === 'searching' && matchStatus === 'idle' && playerId) {
+      console.log('[Matchmaking] Starting search...');
+      findMatch(playerId, betAmount, betCurrency);
+    }
+  }, [phase, matchStatus, playerId, betAmount, betCurrency, findMatch]);
+
+  // --------------------------------------------------------
+  // PHASE 2: MATCHED - When opponent found, prompt for deposit
+  // --------------------------------------------------------
+
+  useEffect(() => {
+    // When match is found, move to matched phase
+    if ((matchStatus === 'found' || matchStatus === 'ready') && phase === 'searching') {
+      console.log('[Matchmaking] Match found! Moving to deposit phase...');
+      setPhase('matched');
+    }
+  }, [matchStatus, phase]);
+
+  // Auto-start deposit when we have a real game room ID
+  useEffect(() => {
+    if (phase === 'matched' && gameRoom?.id && !depositComplete && escrowStatus === 'idle') {
+      console.log(`[Matchmaking] Starting deposit for game ${gameRoom.id}`);
+      setPhase('depositing');
       handleDeposit();
     }
-  }, [phase, escrowStatus, playerId, depositComplete]);
+  }, [phase, gameRoom, depositComplete, escrowStatus]);
 
-  // Handle deposit completion
-  useEffect(() => {
-    if (escrowStatus === 'complete' && !depositComplete) {
-      setDepositComplete(true);
-      setPhase('searching');
-    }
-  }, [escrowStatus, depositComplete]);
+  // --------------------------------------------------------
+  // PHASE 3: DEPOSITING - Make the deposit to real game ID
+  // --------------------------------------------------------
 
-  // Handle deposit
   const handleDeposit = useCallback(async () => {
-    if (!playerId) return;
+    if (!playerId || !gameRoom?.id) {
+      console.error('[Matchmaking] Cannot deposit - missing playerId or gameRoom.id');
+      return;
+    }
 
-    // For now, we'll create a "pending" game room ID
-    // In production, you'd create the game room first, then deposit
-    const tempGameId = `pending_${playerId}_${Date.now()}`;
-
-    const success = await deposit(tempGameId, betAmount, betCurrency);
+    console.log(`[Matchmaking] Depositing ${betAmount} ${betCurrency} to game ${gameRoom.id}`);
+    const success = await deposit(gameRoom.id, betAmount, betCurrency);
 
     if (success) {
       setDepositComplete(true);
-      setPhase('searching');
+      setPhase('waiting_opponent');
+      // Signal we're ready (deposit complete)
+      setReady();
     }
-  }, [playerId, betAmount, betCurrency, deposit]);
+  }, [playerId, gameRoom, betAmount, betCurrency, deposit, setReady]);
+
+  // Handle deposit completion
+  useEffect(() => {
+    if (escrowStatus === 'complete' && phase === 'depositing' && !depositComplete) {
+      setDepositComplete(true);
+      setPhase('waiting_opponent');
+      setReady();
+    }
+  }, [escrowStatus, phase, depositComplete, setReady]);
 
   // --------------------------------------------------------
-  // SEARCHING PHASE
+  // PHASE 4: WAITING FOR OPPONENT'S DEPOSIT
   // --------------------------------------------------------
 
   useEffect(() => {
-    // Start searching after deposit is complete
-    if (phase === 'searching' && depositComplete && matchStatus === 'idle') {
-      findMatch(playerId, betAmount, betCurrency);
-    }
-  }, [phase, depositComplete, matchStatus, playerId, betAmount, betCurrency, findMatch]);
-
-  // Update phase based on match status
-  useEffect(() => {
-    if (matchStatus === 'found' || matchStatus === 'ready') {
-      setPhase('matched');
-    } else if (matchStatus === 'playing') {
+    // When game status becomes 'playing', both deposits are in
+    if (matchStatus === 'playing') {
       setPhase('starting');
     }
   }, [matchStatus]);
 
   // --------------------------------------------------------
-  // READY PHASE
-  // --------------------------------------------------------
-
-  useEffect(() => {
-    // Auto-ready when match is found
-    if (matchStatus === 'ready' && gameRoom) {
-      setReady();
-    }
-  }, [matchStatus, gameRoom, setReady]);
-
-  // --------------------------------------------------------
-  // GAME START
+  // PHASE 5: GAME START
   // --------------------------------------------------------
 
   useEffect(() => {
     // Navigate to game when it starts
-    if (matchStatus === 'playing' && gameRoom) {
+    if (matchStatus === 'playing' && gameRoom && phase === 'starting') {
       navigation.replace('Game', {
         betAmount,
         betCurrency,
@@ -172,7 +180,7 @@ export default function MatchmakingScreen({
         opponentName: opponent?.displayName || 'Opponent',
       });
     }
-  }, [matchStatus, gameRoom, navigation, betAmount, betCurrency, playerId, opponent]);
+  }, [matchStatus, gameRoom, phase, navigation, betAmount, betCurrency, playerId, opponent]);
 
   // --------------------------------------------------------
   // HANDLERS
@@ -186,7 +194,7 @@ export default function MatchmakingScreen({
     }
 
     // If deposit was made, request a refund
-    if (depositComplete) {
+    if (depositComplete && gameRoom?.id) {
       console.log('[MatchmakingScreen] Requesting refund for deposit...');
       const refundSuccess = await cancelDeposit();
       if (refundSuccess) {
@@ -202,7 +210,7 @@ export default function MatchmakingScreen({
   // Retry deposit if it failed
   const handleRetryDeposit = () => {
     resetEscrow();
-    setPhase('deposit');
+    setPhase('matched'); // Go back to matched phase to retry deposit
   };
 
   // --------------------------------------------------------
@@ -211,20 +219,18 @@ export default function MatchmakingScreen({
 
   // Get the main status message based on phase
   const getStatusMessage = (): string => {
-    if (phase === 'deposit') {
-      return escrowMessage || 'Preparing deposit...';
-    }
-
-    switch (matchStatus) {
+    switch (phase) {
       case 'searching':
         return 'Searching for opponent...';
-      case 'found':
-        return 'Match found!';
-      case 'ready':
+      case 'matched':
         return opponent
-          ? `Matched with ${opponent.displayName}!\nWaiting for game to start...`
-          : 'Waiting for opponent...';
-      case 'playing':
+          ? `Matched with ${opponent.displayName}!`
+          : 'Match found!';
+      case 'depositing':
+        return escrowMessage || 'Processing deposit...';
+      case 'waiting_opponent':
+        return 'Waiting for opponent\'s deposit...';
+      case 'starting':
         return 'Starting game...';
       default:
         return 'Preparing...';
@@ -233,9 +239,9 @@ export default function MatchmakingScreen({
 
   // Check if we should show the spinner
   const showSpinner =
-    (phase === 'deposit' && ['building_tx', 'awaiting_signature', 'sending', 'verifying'].includes(escrowStatus)) ||
-    (phase === 'searching' && matchStatus === 'searching') ||
-    (phase === 'matched' && ['found', 'ready'].includes(matchStatus)) ||
+    phase === 'searching' ||
+    (phase === 'depositing' && ['building_tx', 'awaiting_signature', 'sending', 'verifying'].includes(escrowStatus)) ||
+    phase === 'waiting_opponent' ||
     phase === 'starting';
 
   // Get current error message
@@ -250,10 +256,13 @@ export default function MatchmakingScreen({
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>
-          {phase === 'deposit' ? 'DEPOSIT' : 'MATCHMAKING'}
+          {phase === 'depositing' ? 'DEPOSIT' : 'MATCHMAKING'}
         </Text>
         <Text style={styles.subtitle}>
-          {phase === 'deposit' ? 'Secure your wager' : 'Find your opponent'}
+          {phase === 'depositing' ? 'Secure your wager' :
+           phase === 'searching' ? 'Finding opponent' :
+           phase === 'waiting_opponent' ? 'Almost ready' :
+           'Get ready to play'}
         </Text>
       </View>
 
@@ -266,14 +275,31 @@ export default function MatchmakingScreen({
         <Text style={styles.betNote}>Winner takes all</Text>
       </View>
 
-      {/* Progress Steps */}
+      {/* Progress Steps - Updated order */}
       <View style={styles.stepsContainer}>
+        {/* Step 1: Match */}
         <View style={styles.step}>
           <View
             style={[
               styles.stepDot,
-              (depositComplete || phase !== 'deposit') && styles.stepDotComplete,
-              phase === 'deposit' && !depositComplete && styles.stepDotActive,
+              phase !== 'searching' && styles.stepDotComplete,
+              phase === 'searching' && styles.stepDotActive,
+            ]}
+          >
+            {phase !== 'searching' && <Text style={styles.stepCheck}>✓</Text>}
+          </View>
+          <Text style={styles.stepLabel}>Match</Text>
+        </View>
+
+        <View style={styles.stepLine} />
+
+        {/* Step 2: Deposit */}
+        <View style={styles.step}>
+          <View
+            style={[
+              styles.stepDot,
+              depositComplete && styles.stepDotComplete,
+              (phase === 'matched' || phase === 'depositing') && !depositComplete && styles.stepDotActive,
             ]}
           >
             {depositComplete && <Text style={styles.stepCheck}>✓</Text>}
@@ -283,23 +309,7 @@ export default function MatchmakingScreen({
 
         <View style={styles.stepLine} />
 
-        <View style={styles.step}>
-          <View
-            style={[
-              styles.stepDot,
-              phase === 'matched' || phase === 'starting' ? styles.stepDotComplete : null,
-              phase === 'searching' && styles.stepDotActive,
-            ]}
-          >
-            {(phase === 'matched' || phase === 'starting') && (
-              <Text style={styles.stepCheck}>✓</Text>
-            )}
-          </View>
-          <Text style={styles.stepLabel}>Match</Text>
-        </View>
-
-        <View style={styles.stepLine} />
-
+        {/* Step 3: Play */}
         <View style={styles.step}>
           <View
             style={[
@@ -326,11 +336,16 @@ export default function MatchmakingScreen({
         <Text style={styles.statusText}>{getStatusMessage()}</Text>
 
         {/* Opponent Info (when matched) */}
-        {opponent && (
+        {opponent && phase !== 'searching' && (
           <View style={styles.opponentInfo}>
             <Text style={styles.opponentLabel}>Your Opponent</Text>
             <Text style={styles.opponentName}>{opponent.displayName}</Text>
           </View>
+        )}
+
+        {/* Game Room ID (for debugging - shows we're using real ID) */}
+        {gameRoom?.id && (
+          <Text style={styles.gameIdText}>Game: {gameRoom.id.slice(0, 12)}...</Text>
         )}
 
         {/* Error Message */}
@@ -362,7 +377,9 @@ export default function MatchmakingScreen({
       <View style={styles.bottomSection}>
         <TouchableOpacity style={styles.cancelButton} onPress={handleCancel}>
           <Text style={styles.cancelButtonText}>
-            {phase === 'deposit' ? 'Cancel' : 'Cancel Search'}
+            {phase === 'searching' ? 'Cancel Search' :
+             phase === 'depositing' ? 'Cancel' :
+             'Leave Match'}
           </Text>
         </TouchableOpacity>
       </View>
@@ -480,6 +497,12 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     textAlign: 'center',
     lineHeight: 26,
+  },
+  gameIdText: {
+    fontSize: 12,
+    color: '#6b7280',
+    marginTop: 8,
+    fontFamily: 'monospace',
   },
   opponentInfo: {
     marginTop: 20,

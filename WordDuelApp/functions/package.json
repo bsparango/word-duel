@@ -14,7 +14,8 @@
     "test-player": "ts-node src/test-player.ts",
     "test-player:win": "ts-node src/test-player.ts win",
     "test-player:lose": "ts-node src/test-player.ts lose",
-    "test-player:tie": "ts-node src/test-player.ts tie"
+    "test-player:tie": "ts-node src/test-player.ts tie",
+    "test-player:forfeit": "ts-node src/test-player.ts forfeit"
   },
   "engines": {
     "node": "20"

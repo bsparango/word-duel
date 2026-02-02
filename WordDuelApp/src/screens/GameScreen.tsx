@@ -441,7 +441,16 @@ export default function GameScreen({ navigation, route }: GameScreenProps) {
           {
             text: 'Forfeit & Quit',
             style: 'destructive',
-            onPress: () => {
+            onPress: async () => {
+              // Call the forfeit function to update game state and trigger payout
+              if (gameRoomId && playerId) {
+                try {
+                  await multiplayerService.forfeitGame(gameRoomId, playerId);
+                  console.log('[Forfeit] Successfully forfeited game');
+                } catch (err) {
+                  console.error('[Forfeit] Error:', err);
+                }
+              }
               // Clean up Firebase listener
               if (gameCleanupRef.current) {
                 gameCleanupRef.current();
@@ -472,7 +481,7 @@ export default function GameScreen({ navigation, route }: GameScreenProps) {
         ]
       );
     }
-  }, [isMultiplayer, betAmount, navigation]);
+  }, [isMultiplayer, betAmount, navigation, gameRoomId, playerId]);
 
   // --------------------------------------------------------
   // COMPUTED VALUES
