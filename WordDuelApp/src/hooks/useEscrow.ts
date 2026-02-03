@@ -16,7 +16,7 @@ import { useState, useCallback } from 'react';
 import functions from '@react-native-firebase/functions';
 
 import { useWallet, CONNECTION } from './useWallet';
-import { buildDepositTransaction, BetCurrency, formatAmount } from '../services/escrow';
+import { buildSolDepositTransaction } from '../services/escrow';
 
 // ============================================================
 // TYPES
@@ -55,11 +55,7 @@ export interface UseEscrowResult {
   statusMessage: string;
 
   // Actions
-  deposit: (
-    gameRoomId: string,
-    amount: number,
-    currency: BetCurrency
-  ) => Promise<boolean>;
+  deposit: (gameRoomId: string, amount?: number) => Promise<boolean>;
   cancelDeposit: () => Promise<boolean>;
   reset: () => void;
 }
@@ -97,25 +93,20 @@ export function useEscrow(): UseEscrowResult {
   const [lastGameRoomId, setLastGameRoomId] = useState<string | null>(null);
 
   /**
-   * Execute a deposit to the escrow wallet.
+   * Execute a SOL deposit to the escrow wallet.
    *
    * This handles the complete flow:
-   * 1. Build the transaction for the specified currency
+   * 1. Build the SOL transaction
    * 2. Send to wallet for user signature
    * 3. Wait for blockchain confirmation
    * 4. Verify with Firebase backend
    *
    * @param gameRoomId - The game room to deposit for
-   * @param amount - Amount to deposit (in SOL or USDC)
-   * @param currency - Which currency to use
+   * @param amount - Amount to deposit in SOL (default 0.01)
    * @returns true if successful, false if failed
    */
   const deposit = useCallback(
-    async (
-      gameRoomId: string,
-      amount: number,
-      currency: BetCurrency
-    ): Promise<boolean> => {
+    async (gameRoomId: string, amount: number = 0.01): Promise<boolean> => {
       // Validate wallet connection
       if (!isConnected || !publicKey) {
         setError('Wallet not connected');
@@ -129,14 +120,14 @@ export function useEscrow(): UseEscrowResult {
         setTxSignature(null);
         setLastGameRoomId(gameRoomId);
 
-        // Step 1: Build the transaction
+        // Step 1: Build the SOL transaction
         setStatus('building_tx');
-        console.log(`[useEscrow] Building ${currency} deposit for ${amount}`);
+        console.log(`[useEscrow] Building SOL deposit for ${amount}`);
 
-        const { transaction } = await buildDepositTransaction(CONNECTION, {
+        const transaction = await buildSolDepositTransaction(CONNECTION, {
           playerPublicKey: publicKey,
           amount,
-          currency,
+          currency: 'SOL',
           gameRoomId,
         });
 
@@ -160,8 +151,7 @@ export function useEscrow(): UseEscrowResult {
           gameRoomId,
           playerId: publicKey.toString(),
           txSignature: signature,
-          expectedAmount: amount,
-          currency,
+          currency: 'SOL',
         });
 
         const resultData = result.data as { success: boolean; error?: string };

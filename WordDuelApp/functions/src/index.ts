@@ -18,12 +18,11 @@ import {
   LAMPORTS_PER_SOL,
   sendAndConfirmTransaction,
 } from '@solana/web3.js';
-import {
-  getAssociatedTokenAddress,
-  createTransferInstruction,
-  TOKEN_PROGRAM_ID,
-} from '@solana/spl-token';
 import * as bs58 from 'bs58';
+
+// Dictionary for word validation (loaded once at cold start)
+import words from 'an-array-of-english-words';
+const VALID_WORDS = new Set(words);
 
 // Initialize Firebase Admin
 admin.initializeApp();
@@ -34,9 +33,6 @@ admin.initializeApp();
 
 // Solana RPC endpoint (devnet for now)
 const SOLANA_RPC = 'https://api.devnet.solana.com';
-
-// USDC mint addresses
-const USDC_MINT_DEVNET = new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU');
 
 // Initialize Solana connection
 const connection = new Connection(SOLANA_RPC, 'confirmed');
@@ -67,8 +63,8 @@ interface VerifyDepositData {
   gameRoomId: string;
   playerId: string;
   txSignature: string;
-  expectedAmount: number;
-  currency: 'SOL' | 'USDC';
+  expectedAmount?: number; // Deprecated: server now uses game.betAmount instead
+  currency: 'SOL';
 }
 
 /**
@@ -97,20 +93,52 @@ async function markSignatureUsed(txSignature: string, gameRoomId: string, player
  * Called by the mobile app after player signs and sends their deposit.
  *
  * Security checks:
- * 1. Verify transaction signature hasn't been used before (replay protection)
- * 2. Verify the sender matches the claimed playerId
- * 3. Verify it sent the correct amount to the escrow wallet
- * 4. Update Firebase with the verified deposit
+ * 1. Verify game exists and player is part of it
+ * 2. Verify deposit amount/currency matches game's configured bet
+ * 3. Verify transaction signature hasn't been used before (replay protection)
+ * 4. Verify the sender matches the claimed playerId
+ * 5. Verify it sent the correct amount to the escrow wallet
+ * 6. Update Firebase with the verified deposit
  */
 export const verifyDeposit = functions.https.onCall(
   async (data: VerifyDepositData, context) => {
-    const { gameRoomId, playerId, txSignature, expectedAmount, currency } = data;
+    // Note: expectedAmount is ignored - we use game.betAmount instead for security
+    const { gameRoomId, playerId, txSignature, currency } = data;
 
     console.log(`[verifyDeposit] Starting verification for game ${gameRoomId}`);
     console.log(`[verifyDeposit] Player: ${playerId}, TX: ${txSignature}`);
 
     try {
-      // SECURITY CHECK 1: Verify signature hasn't been used before (replay protection)
+      // SECURITY CHECK 1: Fetch game and verify it exists
+      const gameSnapshot = await admin.database().ref(`games/${gameRoomId}`).once('value');
+      if (!gameSnapshot.exists()) {
+        console.log('[verifyDeposit] REJECTED: Game not found');
+        return { success: false, error: 'Game not found' };
+      }
+
+      const game = gameSnapshot.val();
+
+      // SECURITY CHECK 2: Verify player is part of this game
+      const isPlayer1 = game.player1?.odid === playerId;
+      const isPlayer2 = game.player2?.odid === playerId;
+      if (!isPlayer1 && !isPlayer2) {
+        console.log('[verifyDeposit] REJECTED: Player not in this game');
+        return { success: false, error: 'Player is not part of this game' };
+      }
+
+      // SECURITY CHECK 3: Verify currency matches game's configured currency
+      const gameCurrency = game.betCurrency || 'SOL';
+      if (currency !== gameCurrency) {
+        console.log(`[verifyDeposit] REJECTED: Currency mismatch. Game requires ${gameCurrency}, got ${currency}`);
+        return { success: false, error: `Game requires ${gameCurrency} deposits` };
+      }
+
+      // SECURITY CHECK 4: Get the expected amount from the GAME, not from the client
+      // This prevents clients from claiming a smaller deposit amount
+      const gameBetAmount = game.betAmount;
+      console.log(`[verifyDeposit] Game bet: ${gameBetAmount} ${gameCurrency}`);
+
+      // SECURITY CHECK 5: Verify signature hasn't been used before (replay protection)
       const alreadyUsed = await isSignatureUsed(txSignature);
       if (alreadyUsed) {
         console.log('[verifyDeposit] REJECTED: Transaction signature already used');
@@ -152,97 +180,52 @@ export const verifyDeposit = functions.https.onCall(
       }
       console.log(`[verifyDeposit] Sender verified: ${senderAddress}`);
 
-      // For SOL transfers, check the balance changes
-      if (currency === 'SOL') {
-        const preBalances = txInfo.meta?.preBalances || [];
-        const postBalances = txInfo.meta?.postBalances || [];
+      // Verify SOL transfer - check balance changes
+      const preBalances = txInfo.meta?.preBalances || [];
+      const postBalances = txInfo.meta?.postBalances || [];
 
-        const escrowIndex = accountKeys.findIndex(
-          (key) => key.toString() === escrowAddress
-        );
+      const escrowIndex = accountKeys.findIndex(
+        (key) => key.toString() === escrowAddress
+      );
 
-        if (escrowIndex === -1) {
-          console.log('[verifyDeposit] Escrow wallet not found in transaction');
-          return {
-            success: false,
-            error: 'Transaction did not include escrow wallet',
-          };
-        }
-
-        // Calculate amount received by escrow
-        const amountReceived = postBalances[escrowIndex] - preBalances[escrowIndex];
-        const expectedLamports = Math.round(expectedAmount * LAMPORTS_PER_SOL);
-
-        console.log(
-          `[verifyDeposit] Amount received: ${amountReceived}, expected: ${expectedLamports}`
-        );
-
-        // Allow small variance for rounding
-        if (amountReceived < expectedLamports * 0.99) {
-          return {
-            success: false,
-            error: `Insufficient deposit: received ${amountReceived / LAMPORTS_PER_SOL} SOL, expected ${expectedAmount} SOL`,
-          };
-        }
-
-        // All security checks passed! Mark signature as used and update Firebase
-        await markSignatureUsed(txSignature, gameRoomId, playerId);
-
-        await updateDepositInFirebase(
-          gameRoomId,
-          playerId,
-          txSignature,
-          amountReceived,
-          currency
-        );
-
-        console.log('[verifyDeposit] Deposit verified and recorded successfully');
-        return { success: true, amountReceived };
-      } else {
-        // USDC verification (SPL token)
-        const preTokenBalances = txInfo.meta?.preTokenBalances || [];
-        const postTokenBalances = txInfo.meta?.postTokenBalances || [];
-
-        // Check token balance changes
-        const preBalance = preTokenBalances.find(
-          (b) => b.owner === escrowAddress
-        );
-        const postBalance = postTokenBalances.find(
-          (b) => b.owner === escrowAddress
-        );
-
-        const preAmount = preBalance?.uiTokenAmount?.uiAmount || 0;
-        const postAmount = postBalance?.uiTokenAmount?.uiAmount || 0;
-        const amountReceived = postAmount - preAmount;
-
-        console.log(
-          `[verifyDeposit] USDC received: ${amountReceived}, expected: ${expectedAmount}`
-        );
-
-        if (amountReceived < expectedAmount * 0.99) {
-          return {
-            success: false,
-            error: `Insufficient USDC deposit: received ${amountReceived}, expected ${expectedAmount}`,
-          };
-        }
-
-        // Convert to smallest units (6 decimals for USDC)
-        const amountInSmallestUnit = Math.round(amountReceived * 1_000_000);
-
-        // All security checks passed! Mark signature as used and update Firebase
-        await markSignatureUsed(txSignature, gameRoomId, playerId);
-
-        await updateDepositInFirebase(
-          gameRoomId,
-          playerId,
-          txSignature,
-          amountInSmallestUnit,
-          currency
-        );
-
-        console.log('[verifyDeposit] USDC deposit verified and recorded successfully');
-        return { success: true, amountReceived };
+      if (escrowIndex === -1) {
+        console.log('[verifyDeposit] Escrow wallet not found in transaction');
+        return {
+          success: false,
+          error: 'Transaction did not include escrow wallet',
+        };
       }
+
+      // Calculate amount received by escrow
+      const amountReceived = postBalances[escrowIndex] - preBalances[escrowIndex];
+      // Use game's bet amount, NOT the client-provided expectedAmount
+      const requiredLamports = Math.round(gameBetAmount * LAMPORTS_PER_SOL);
+
+      console.log(
+        `[verifyDeposit] Amount received: ${amountReceived}, required: ${requiredLamports}`
+      );
+
+      // Allow small variance for rounding (0.1%)
+      if (amountReceived < requiredLamports * 0.999) {
+        return {
+          success: false,
+          error: `Insufficient deposit: received ${amountReceived / LAMPORTS_PER_SOL} SOL, required ${gameBetAmount} SOL`,
+        };
+      }
+
+      // All security checks passed! Mark signature as used and update Firebase
+      await markSignatureUsed(txSignature, gameRoomId, playerId);
+
+      await updateDepositInFirebase(
+        gameRoomId,
+        playerId,
+        txSignature,
+        amountReceived,
+        'SOL'
+      );
+
+      console.log('[verifyDeposit] Deposit verified and recorded successfully');
+      return { success: true, amountReceived };
     } catch (error: any) {
       console.error('[verifyDeposit] Error:', error);
       return { success: false, error: error.message };
@@ -342,7 +325,6 @@ export const processGamePayout = functions.database
       const winner = game.winner;
       const player1 = game.player1;
       const player2 = game.player2;
-      const currency = game.betCurrency || 'SOL';
 
       // Get deposit amounts
       const player1Deposit = game.escrow?.player1Deposit?.amount || 0;
@@ -369,8 +351,7 @@ export const processGamePayout = functions.database
             player1RefundTx = await sendPayout(
               escrowKeypair,
               player1.odid,
-              player1Deposit,
-              currency
+              player1Deposit
             );
             console.log(`[processGamePayout] Player 1 refund complete: ${player1RefundTx}`);
           } catch (err: any) {
@@ -384,8 +365,7 @@ export const processGamePayout = functions.database
             player2RefundTx = await sendPayout(
               escrowKeypair,
               player2.odid,
-              player2Deposit,
-              currency
+              player2Deposit
             );
             console.log(`[processGamePayout] Player 2 refund complete: ${player2RefundTx}`);
           } catch (err: any) {
@@ -414,8 +394,7 @@ export const processGamePayout = functions.database
       const payoutSignature = await sendPayout(
         escrowKeypair,
         winnerAddress,
-        payoutAmount,
-        currency
+        payoutAmount
       );
 
       // Update Firebase
@@ -442,62 +421,29 @@ export const processGamePayout = functions.database
   });
 
 /**
- * Helper: Send SOL or USDC payout from escrow to a player
+ * Helper: Send SOL payout from escrow to a player
  */
 async function sendPayout(
   escrowKeypair: Keypair,
   recipientAddress: string,
-  amount: number,
-  currency: string
+  amount: number
 ): Promise<string> {
   const recipientPublicKey = new PublicKey(recipientAddress);
 
-  if (currency === 'SOL') {
-    // SOL transfer
-    const transaction = new Transaction().add(
-      SystemProgram.transfer({
-        fromPubkey: escrowKeypair.publicKey,
-        toPubkey: recipientPublicKey,
-        lamports: amount,
-      })
-    );
+  const transaction = new Transaction().add(
+    SystemProgram.transfer({
+      fromPubkey: escrowKeypair.publicKey,
+      toPubkey: recipientPublicKey,
+      lamports: amount,
+    })
+  );
 
-    const signature = await sendAndConfirmTransaction(connection, transaction, [
-      escrowKeypair,
-    ]);
+  const signature = await sendAndConfirmTransaction(connection, transaction, [
+    escrowKeypair,
+  ]);
 
-    console.log(`[sendPayout] SOL transfer complete: ${signature}`);
-    return signature;
-  } else {
-    // USDC transfer
-    const escrowTokenAccount = await getAssociatedTokenAddress(
-      USDC_MINT_DEVNET,
-      escrowKeypair.publicKey
-    );
-
-    const recipientTokenAccount = await getAssociatedTokenAddress(
-      USDC_MINT_DEVNET,
-      recipientPublicKey
-    );
-
-    const transaction = new Transaction().add(
-      createTransferInstruction(
-        escrowTokenAccount,
-        recipientTokenAccount,
-        escrowKeypair.publicKey,
-        amount,
-        [],
-        TOKEN_PROGRAM_ID
-      )
-    );
-
-    const signature = await sendAndConfirmTransaction(connection, transaction, [
-      escrowKeypair,
-    ]);
-
-    console.log(`[sendPayout] USDC transfer complete: ${signature}`);
-    return signature;
-  }
+  console.log(`[sendPayout] SOL transfer complete: ${signature}`);
+  return signature;
 }
 
 // ============================================================
@@ -617,15 +563,20 @@ export const cancelMatchmaking = functions.https.onCall(
         return { success: true, message: 'No deposit to refund' };
       }
 
-      // Process refund - use currency from deposit object (more reliable than game.betCurrency)
+      // Process refund - cap at the game's bet amount to prevent over-refunding
       const escrowKeypair = getEscrowKeypair();
-      const currency = deposit.currency || game.betCurrency || 'SOL';
+      const gameBetAmount = game.betAmount || 0.01;
+      const maxRefundLamports = Math.round(gameBetAmount * LAMPORTS_PER_SOL);
+
+      // Use the smaller of: actual deposit amount or max allowed refund
+      const refundAmount = Math.min(deposit.amount, maxRefundLamports);
+
+      console.log(`[cancelMatchmaking] Deposit amount: ${deposit.amount}, Max refund: ${maxRefundLamports}, Refunding: ${refundAmount}`);
 
       const refundSignature = await sendPayout(
         escrowKeypair,
         playerId,
-        deposit.amount,
-        currency
+        refundAmount
       );
 
       // Update Firebase
@@ -641,6 +592,157 @@ export const cancelMatchmaking = functions.https.onCall(
       return { success: true, refundSignature };
     } catch (error: any) {
       console.error('[cancelMatchmaking] Error:', error);
+      return { success: false, error: error.message };
+    }
+  }
+);
+
+// ============================================================
+// SERVER-SIDE WORD SUBMISSION (ANTI-CHEAT)
+// ============================================================
+
+interface SubmitWordData {
+  gameId: string;
+  playerId: string;
+  word: string;
+}
+
+/**
+ * Calculate the score for a word based on its length.
+ * Must match the client-side scoring exactly.
+ */
+function calculateScore(word: string): number {
+  const length = word.length;
+  if (length < 3) return 0;
+
+  const scoreTable: { [key: number]: number } = {
+    3: 3,
+    4: 5,
+    5: 8,
+    6: 12,
+    7: 17,
+    8: 23,
+  };
+
+  if (length > 8) {
+    return 23 + (length - 8) * 6;
+  }
+
+  return scoreTable[length] || 0;
+}
+
+/**
+ * Check if a word can be formed from available letters.
+ */
+function canFormWord(word: string, availableLetters: string[]): boolean {
+  const available = [...availableLetters]; // Make a copy
+  for (const char of word.toUpperCase()) {
+    const index = available.indexOf(char);
+    if (index === -1) {
+      return false;
+    }
+    available.splice(index, 1);
+  }
+  return true;
+}
+
+/**
+ * Server-side word submission with full validation.
+ * This prevents cheating by validating:
+ * 1. Word can be formed from game's letter pool
+ * 2. Word is a valid English word
+ * 3. Word hasn't already been submitted by this player
+ * 4. Score is calculated server-side
+ */
+export const submitWord = functions.https.onCall(
+  async (data: SubmitWordData, context) => {
+    const { gameId, playerId, word } = data;
+
+    if (!gameId || !playerId || !word) {
+      return { success: false, error: 'Missing required fields' };
+    }
+
+    const normalizedWord = word.toUpperCase().trim();
+    console.log(`[submitWord] Game: ${gameId}, Player: ${playerId}, Word: ${normalizedWord}`);
+
+    try {
+      const gameRef = admin.database().ref(`games/${gameId}`);
+      const snapshot = await gameRef.once('value');
+
+      if (!snapshot.exists()) {
+        return { success: false, error: 'Game not found' };
+      }
+
+      const game = snapshot.val();
+
+      // Verify game is in playing state
+      if (game.status !== 'playing') {
+        return { success: false, error: 'Game is not in progress' };
+      }
+
+      // Determine which player this is
+      const isPlayer1 = game.player1?.odid === playerId;
+      const isPlayer2 = game.player2?.odid === playerId;
+
+      if (!isPlayer1 && !isPlayer2) {
+        return { success: false, error: 'Player not in this game' };
+      }
+
+      const playerKey = isPlayer1 ? 'player1' : 'player2';
+      const playerData = game[playerKey];
+
+      // VALIDATION 1: Check word length
+      if (normalizedWord.length < 3) {
+        return { success: false, error: 'Word must be at least 3 letters' };
+      }
+
+      // VALIDATION 2: Check if word can be formed from letters
+      const gameLetters = game.letters || [];
+      if (!canFormWord(normalizedWord, gameLetters)) {
+        console.log(`[submitWord] REJECTED: Cannot form "${normalizedWord}" from letters: ${gameLetters.join(',')}`);
+        return { success: false, error: 'Word cannot be formed from available letters' };
+      }
+
+      // VALIDATION 3: Check if word is valid English
+      if (!VALID_WORDS.has(normalizedWord.toLowerCase())) {
+        console.log(`[submitWord] REJECTED: "${normalizedWord}" is not a valid word`);
+        return { success: false, error: 'Not a valid English word' };
+      }
+
+      // VALIDATION 4: Check if word already submitted by this player
+      const wordsFound = playerData.wordsFound || [];
+      if (wordsFound.includes(normalizedWord)) {
+        return { success: false, error: 'Word already submitted' };
+      }
+
+      // Calculate score server-side
+      const score = calculateScore(normalizedWord);
+
+      // Update Firebase atomically using transaction
+      const playerRef = gameRef.child(playerKey);
+      await playerRef.transaction((currentData) => {
+        if (currentData === null) {
+          return currentData;
+        }
+
+        // Double-check word hasn't been added (race condition protection)
+        const currentWords = currentData.wordsFound || [];
+        if (currentWords.includes(normalizedWord)) {
+          return currentData; // No change
+        }
+
+        return {
+          ...currentData,
+          score: (currentData.score || 0) + score,
+          wordsFound: [...currentWords, normalizedWord],
+          lastActivity: Date.now(),
+        };
+      });
+
+      console.log(`[submitWord] SUCCESS: "${normalizedWord}" = ${score} points`);
+      return { success: true, word: normalizedWord, score };
+    } catch (error: any) {
+      console.error('[submitWord] Error:', error);
       return { success: false, error: error.message };
     }
   }

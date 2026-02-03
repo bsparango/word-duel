@@ -16,13 +16,14 @@ import {
   StyleSheet,
   TouchableOpacity,
   ActivityIndicator,
+  ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp } from '@react-navigation/native';
 
 // Import hooks
-import { useMultiplayer, BetCurrency } from '../hooks/useMultiplayer';
+import { useMultiplayer } from '../hooks/useMultiplayer';
 import { useEscrow, EscrowStatus } from '../hooks/useEscrow';
 
 // Preload dictionary while waiting for match
@@ -52,7 +53,6 @@ export default function MatchmakingScreen({
   const {
     playerId,
     betAmount = 0.01,
-    betCurrency = 'SOL' as BetCurrency,
   } = route.params || {};
 
   // Track the current phase of matchmaking
@@ -96,9 +96,9 @@ export default function MatchmakingScreen({
     // Start searching when screen loads
     if (phase === 'searching' && matchStatus === 'idle' && playerId) {
       console.log('[Matchmaking] Starting search...');
-      findMatch(playerId, betAmount, betCurrency);
+      findMatch(playerId, betAmount);
     }
-  }, [phase, matchStatus, playerId, betAmount, betCurrency, findMatch]);
+  }, [phase, matchStatus, playerId, betAmount, findMatch]);
 
   // --------------------------------------------------------
   // PHASE 2: MATCHED - When opponent found, prompt for deposit
@@ -131,8 +131,8 @@ export default function MatchmakingScreen({
       return;
     }
 
-    console.log(`[Matchmaking] Depositing ${betAmount} ${betCurrency} to game ${gameRoom.id}`);
-    const success = await deposit(gameRoom.id, betAmount, betCurrency);
+    console.log(`[Matchmaking] Depositing ${betAmount} SOL to game ${gameRoom.id}`);
+    const success = await deposit(gameRoom.id, betAmount);
 
     if (success) {
       setDepositComplete(true);
@@ -140,7 +140,7 @@ export default function MatchmakingScreen({
       // Signal we're ready (deposit complete)
       setReady();
     }
-  }, [playerId, gameRoom, betAmount, betCurrency, deposit, setReady]);
+  }, [playerId, gameRoom, betAmount, deposit, setReady]);
 
   // Handle deposit completion
   useEffect(() => {
@@ -171,7 +171,6 @@ export default function MatchmakingScreen({
     if (matchStatus === 'playing' && gameRoom && phase === 'starting') {
       navigation.replace('Game', {
         betAmount,
-        betCurrency,
         isPractice: false,
         isMultiplayer: true,
         gameRoomId: gameRoom.id,
@@ -180,7 +179,7 @@ export default function MatchmakingScreen({
         opponentName: opponent?.displayName || 'Opponent',
       });
     }
-  }, [matchStatus, gameRoom, phase, navigation, betAmount, betCurrency, playerId, opponent]);
+  }, [matchStatus, gameRoom, phase, navigation, betAmount, playerId, opponent]);
 
   // --------------------------------------------------------
   // HANDLERS
@@ -253,6 +252,10 @@ export default function MatchmakingScreen({
 
   return (
     <SafeAreaView style={styles.container}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>
@@ -270,7 +273,7 @@ export default function MatchmakingScreen({
       <View style={styles.betContainer}>
         <Text style={styles.betLabel}>Wager</Text>
         <Text style={styles.betAmount}>
-          {betAmount} {betCurrency}
+          {betAmount} SOL
         </Text>
         <Text style={styles.betNote}>Winner takes all</Text>
       </View>
@@ -383,6 +386,7 @@ export default function MatchmakingScreen({
           </Text>
         </TouchableOpacity>
       </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -395,6 +399,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#1a1a2e',
+  },
+  scrollContent: {
+    flexGrow: 1,
     padding: 20,
   },
 
@@ -563,8 +570,8 @@ const styles = StyleSheet.create({
 
   // Bottom section
   bottomSection: {
-    marginTop: 'auto',
-    paddingBottom: 10,
+    marginTop: 16,
+    paddingBottom: 20,
   },
   cancelButton: {
     backgroundColor: '#7f1d1d',

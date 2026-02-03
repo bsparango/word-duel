@@ -9,6 +9,7 @@
  */
 
 import database from '@react-native-firebase/database';
+import functions from '@react-native-firebase/functions';
 import { generateLetterPoolFromSeed, generateGameSeed } from '../utils/gameLogic';
 
 // ============================================================
@@ -28,8 +29,8 @@ export interface PlayerState {
 // Escrow deposit tracking
 export interface EscrowDeposit {
   txSignature: string;      // Solana transaction signature
-  amount: number;           // Amount in lamports (SOL) or smallest units (USDC)
-  currency: 'SOL' | 'USDC';
+  amount: number;           // Amount in lamports
+  currency: 'SOL';          // Always SOL (USDC removed for simplicity)
   confirmedAt: number;      // Timestamp when confirmed
 }
 
@@ -52,8 +53,8 @@ export interface GameRoom {
   endedAt?: number;
   seed: string;             // Shared seed for letter generation
   letters: string[];        // The letter pool (generated from seed)
-  betAmount: number;        // Amount bet by each player
-  betCurrency: 'SOL' | 'USDC'; // Currency used for betting
+  betAmount: number;        // Amount bet by each player (always 0.01)
+  betCurrency: 'SOL';       // Always SOL (USDC removed for simplicity)
   player1: PlayerState;
   player2?: PlayerState;
   winner?: string;          // Player ID of winner
@@ -66,7 +67,7 @@ export interface QueueEntry {
   odid: string;
   displayName: string;
   betAmount: number;
-  betCurrency: 'SOL' | 'USDC';
+  betCurrency: 'SOL';       // Always SOL
   joinedAt: number;
 }
 
@@ -101,36 +102,39 @@ class MultiplayerService {
    */
   async joinQueue(
     playerId: string,
-    betAmount: number,
-    betCurrency: 'SOL' | 'USDC' = 'SOL',
+    betAmount: number = 0.01,
     onMatchFound: MatchFoundCallback
   ): Promise<() => void> {
     const displayName = this.shortenAddress(playerId);
     const queueRef = database().ref('matchmaking/queue');
 
-    console.log('[Matchmaking] Player joining queue:', playerId, 'bet:', betAmount, betCurrency);
+    console.log('[Matchmaking] Player joining queue:', playerId, 'bet:', betAmount, 'SOL');
 
-    // First, check if there's already a player waiting with the same bet amount
+    // Check if there's a player waiting with the same bet amount
     const snapshot = await queueRef
       .orderByChild('betAmount')
       .equalTo(betAmount)
-      .limitToFirst(1)
       .once('value');
 
     console.log('[Matchmaking] Queue check - exists:', snapshot.exists());
 
     if (snapshot.exists()) {
-      // Found a waiting player - create a game!
       const entries = snapshot.val();
       console.log('[Matchmaking] Found entries in queue:', JSON.stringify(entries));
-      const opponentKey = Object.keys(entries)[0];
-      const opponent = entries[opponentKey] as QueueEntry;
 
-      console.log('[Matchmaking] Potential opponent:', opponent.odid);
+      // Find an opponent (not ourselves)
+      for (const [opponentKey, entry] of Object.entries(entries)) {
+        const opponent = entry as QueueEntry;
 
-      // Don't match with yourself
-      if (opponent.odid !== playerId) {
+        // Skip if it's ourselves
+        if (opponent.odid === playerId) {
+          console.log('[Matchmaking] Found self in queue, skipping');
+          continue;
+        }
+
+        // Found a valid match!
         console.log('[Matchmaking] MATCH FOUND! Creating game...');
+
         // Remove opponent from queue
         await queueRef.child(opponentKey).remove();
 
@@ -139,16 +143,16 @@ class MultiplayerService {
           odid: playerId,
           displayName,
           betAmount,
-          betCurrency,
+          betCurrency: 'SOL',
           joinedAt: Date.now(),
         });
 
         console.log('[Matchmaking] Game created:', gameId);
         onMatchFound(gameId);
         return () => {}; // No cleanup needed - game already created
-      } else {
-        console.log('[Matchmaking] Found self in queue, ignoring');
       }
+
+      console.log('[Matchmaking] No matching opponent found');
     }
 
     // No opponent found - add to queue and wait
@@ -158,7 +162,7 @@ class MultiplayerService {
       odid: playerId,
       displayName,
       betAmount,
-      betCurrency,
+      betCurrency: 'SOL',
       joinedAt: Date.now(),
     };
 
@@ -310,6 +314,7 @@ class MultiplayerService {
 
   /**
    * Signal that the player is ready to start.
+   * Game only starts when both players are ready AND both deposits are locked.
    */
   async setPlayerReady(gameId: string, playerId: string): Promise<void> {
     const gameRef = database().ref(`games/${gameId}`);
@@ -328,7 +333,13 @@ class MultiplayerService {
     const updatedGame = updatedSnapshot.val() as GameRoom;
 
     if (updatedGame.player1.isReady && updatedGame.player2?.isReady) {
-      // Both ready - start the game!
+      // SECURITY: Only start game if escrow is locked (both deposits confirmed)
+      if (updatedGame.escrow?.status !== 'locked') {
+        console.log('[setPlayerReady] Both ready but escrow not locked, waiting for deposits');
+        return;
+      }
+
+      // Both ready AND both deposited - start the game!
       await gameRef.update({
         status: 'playing',
         startedAt: Date.now(),
@@ -341,61 +352,47 @@ class MultiplayerService {
   // --------------------------------------------------------
 
   /**
-   * Submit a word and update the player's score.
-   * Uses Firebase transactions to prevent race conditions when submitting
-   * multiple words quickly.
+   * Submit a word for validation and scoring.
+   * Calls server-side Cloud Function which validates:
+   * - Word can be formed from game's letter pool
+   * - Word is a valid English word
+   * - Word hasn't already been submitted
+   * - Score calculated server-side (anti-cheat)
    *
    * @param gameId - The game room ID
    * @param playerId - The player's wallet address
-   * @param word - The word that was submitted
-   * @param score - Points earned for this word
+   * @param word - The word to submit
+   * @returns Object with success status and score (if successful)
    */
   async submitWord(
     gameId: string,
     playerId: string,
-    word: string,
-    score: number
-  ): Promise<void> {
+    word: string
+  ): Promise<{ success: boolean; score?: number; error?: string }> {
     const t0 = Date.now();
-    console.log('[TIMING] submitWord START');
-
-    const gameRef = database().ref(`games/${gameId}`);
-
-    // First, determine which player key to use
-    const snapshot = await gameRef.once('value');
-    if (!snapshot.exists()) {
-      console.log('submitWord: Game not found:', gameId);
-      return;
-    }
-
-    const game = snapshot.val() as GameRoom;
-    const playerKey = game.player1?.odid === playerId ? 'player1' : 'player2';
-
-    // Use a transaction to atomically update score and words
-    // This prevents race conditions when submitting words quickly
-    const playerRef = gameRef.child(playerKey);
+    console.log('[submitWord] Submitting to server:', word);
 
     try {
-      await playerRef.transaction((currentData) => {
-        if (currentData === null) {
-          // Player data doesn't exist yet (shouldn't happen in normal flow)
-          return currentData;
-        }
-
-        // Atomically update the player's state
-        return {
-          ...currentData,
-          score: (currentData.score || 0) + score,
-          wordsFound: [...(currentData.wordsFound || []), word],
-          lastActivity: Date.now(),
-        };
+      // Call server-side validation function
+      const submitWordFn = functions().httpsCallable('submitWord');
+      const result = await submitWordFn({
+        gameId,
+        playerId,
+        word: word.toUpperCase(),
       });
 
-      console.log('[TIMING] submitWord END (transaction):', Date.now() - t0, 'ms');
-    } catch (error) {
-      console.error('[submitWord] Transaction failed:', error);
-      // Transaction failed - the word submission was lost
-      // In production, you might want to retry or notify the user
+      const data = result.data as { success: boolean; score?: number; error?: string };
+
+      console.log('[submitWord] Server response:', data, 'Time:', Date.now() - t0, 'ms');
+
+      if (data.success) {
+        return { success: true, score: data.score };
+      } else {
+        return { success: false, error: data.error };
+      }
+    } catch (error: any) {
+      console.error('[submitWord] Failed:', error);
+      return { success: false, error: error.message || 'Failed to submit word' };
     }
   }
 

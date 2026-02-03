@@ -4,12 +4,11 @@
  * This is the main menu of Word Duel. From here, players can:
  * - Connect their Solana wallet
  * - See their SOL balance
- * - Choose bet amount and currency (SOL or USDC)
- * - Start finding a match
+ * - Start finding a match (0.01 SOL per game)
  * - Practice solo
  */
 
-import React, { useState } from 'react';
+import React from 'react';
 import {
   View,
   Text,
@@ -23,14 +22,8 @@ import { useWallet } from '../hooks/useWallet';
 // For navigation between screens
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
-// Bet currency type
-type BetCurrency = 'SOL' | 'USDC';
-
-// Fixed bet amounts for each currency (uniform for all players)
-const FIXED_BET_AMOUNTS = {
-  SOL: 0.01,
-  USDC: 1,
-};
+// Fixed bet amount - all games are 0.01 SOL
+const BET_AMOUNT = 0.01;
 
 type HomeScreenProps = {
   navigation: NativeStackNavigationProp<any>;
@@ -49,11 +42,6 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
     error,
   } = useWallet();
 
-  // Bet configuration state - fixed amounts for fair matchmaking
-  const [betCurrency, setBetCurrency] = useState<BetCurrency>('SOL');
-  // Amount is derived from currency selection (no custom amounts)
-  const betAmount = FIXED_BET_AMOUNTS[betCurrency];
-
   // --------------------------------------------------------
   // HELPER FUNCTIONS
   // --------------------------------------------------------
@@ -64,18 +52,12 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
     return `${address.slice(0, 8)}...${address.slice(-4)}`;
   };
 
-  // Handle currency change (amount is automatically set based on currency)
-  const handleCurrencyChange = (currency: BetCurrency) => {
-    setBetCurrency(currency);
-  };
-
   // Handle the "Find Match" button press
   const handleFindMatch = () => {
     // Navigate to matchmaking to find an opponent
     navigation.navigate('Matchmaking', {
       playerId: publicKey?.toString(), // Wallet address as player ID
-      betAmount,
-      betCurrency,
+      betAmount: BET_AMOUNT,
     });
   };
 
@@ -158,62 +140,11 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
         )}
       </View>
 
-      {/* Bet Configuration - only show when connected */}
+      {/* Bet Info - only show when connected */}
       {isConnected && (
         <View style={styles.betSection}>
-          <Text style={styles.betSectionTitle}>Select Currency</Text>
-
-          {/* Currency Toggle */}
-          <View style={styles.currencyToggle}>
-            <TouchableOpacity
-              style={[
-                styles.currencyButton,
-                betCurrency === 'SOL' && styles.currencyButtonActive,
-              ]}
-              onPress={() => handleCurrencyChange('SOL')}
-            >
-              <Text
-                style={[
-                  styles.currencyButtonText,
-                  betCurrency === 'SOL' && styles.currencyButtonTextActive,
-                ]}
-              >
-                SOL
-              </Text>
-              <Text
-                style={[
-                  styles.currencyAmountText,
-                  betCurrency === 'SOL' && styles.currencyAmountTextActive,
-                ]}
-              >
-                0.01 SOL
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.currencyButton,
-                betCurrency === 'USDC' && styles.currencyButtonActive,
-              ]}
-              onPress={() => handleCurrencyChange('USDC')}
-            >
-              <Text
-                style={[
-                  styles.currencyButtonText,
-                  betCurrency === 'USDC' && styles.currencyButtonTextActive,
-                ]}
-              >
-                USDC
-              </Text>
-              <Text
-                style={[
-                  styles.currencyAmountText,
-                  betCurrency === 'USDC' && styles.currencyAmountTextActive,
-                ]}
-              >
-                $1 USDC
-              </Text>
-            </TouchableOpacity>
-          </View>
+          <Text style={styles.betInfoText}>Entry Fee: {BET_AMOUNT} SOL per game</Text>
+          <Text style={styles.betInfoSubtext}>Winner takes all!</Text>
         </View>
       )}
 
@@ -231,7 +162,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
         >
           <Text style={styles.actionButtonText}>Find Match</Text>
           <Text style={styles.actionButtonSubtext}>
-            {betAmount} {betCurrency} entry
+            {BET_AMOUNT} SOL entry
           </Text>
         </TouchableOpacity>
 
@@ -366,50 +297,23 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
-  // Bet configuration styles
+  // Bet info styles
   betSection: {
     backgroundColor: '#16213e',
     borderRadius: 16,
     padding: 16,
     marginBottom: 16,
-  },
-  betSectionTitle: {
-    color: '#9ca3af',
-    fontSize: 14,
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  currencyToggle: {
-    flexDirection: 'row',
-    backgroundColor: '#1f2937',
-    borderRadius: 8,
-    padding: 4,
-    gap: 4,
-  },
-  currencyButton: {
-    flex: 1,
-    paddingVertical: 14,
     alignItems: 'center',
-    borderRadius: 6,
   },
-  currencyButtonActive: {
-    backgroundColor: '#7c3aed',
-  },
-  currencyButtonText: {
-    color: '#9ca3af',
+  betInfoText: {
+    color: '#22c55e',
     fontSize: 18,
     fontWeight: 'bold',
   },
-  currencyButtonTextActive: {
-    color: '#ffffff',
-  },
-  currencyAmountText: {
-    color: '#6b7280',
-    fontSize: 12,
-    marginTop: 2,
-  },
-  currencyAmountTextActive: {
-    color: 'rgba(255, 255, 255, 0.7)',
+  betInfoSubtext: {
+    color: '#9ca3af',
+    fontSize: 14,
+    marginTop: 4,
   },
 
   // Action buttons styles

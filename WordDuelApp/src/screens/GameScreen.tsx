@@ -335,7 +335,7 @@ export default function GameScreen({ navigation, route }: GameScreenProps) {
   }, [currentWordLetters]);
 
   // Submit the current word
-  const handleSubmit = useCallback(() => {
+  const handleSubmit = useCallback(async () => {
     const t0 = Date.now();
     console.log('[TIMING] handleSubmit START');
 
@@ -350,7 +350,7 @@ export default function GameScreen({ navigation, route }: GameScreenProps) {
     const word = currentWordLetters.map((l) => l.letter).join('');
     console.log('[TIMING] Word built:', Date.now() - t0, 'ms');
 
-    // Check if already submitted
+    // Check if already submitted (client-side quick check)
     if (submittedWords.some((w) => w.word === word)) {
       setFeedback('Already used!');
       Vibration.vibrate(100);
@@ -358,38 +358,54 @@ export default function GameScreen({ navigation, route }: GameScreenProps) {
     }
     console.log('[TIMING] Duplicate check:', Date.now() - t0, 'ms');
 
-    // Check if it's a valid English word
-    const validStart = Date.now();
-    const isValid = isValidWord(word);
-    console.log('[TIMING] isValidWord took:', Date.now() - validStart, 'ms');
-    if (!isValid) {
-      setFeedback('Not a word');
-      Vibration.vibrate(100);
-      return;
-    }
-    console.log('[TIMING] After validation:', Date.now() - t0, 'ms');
-
-    // Calculate the score for this word
-    const wordScore = calculateScore(word);
-    console.log('[TIMING] Score calculated:', Date.now() - t0, 'ms');
-
-    // Add to submitted words
-    setSubmittedWords((prev) => [...prev, { word, score: wordScore }]);
-
-    // Update total score
-    setTotalScore((prev) => prev + wordScore);
-    console.log('[TIMING] State updated:', Date.now() - t0, 'ms');
-
-    // In multiplayer mode, sync the word with Firebase
+    // MULTIPLAYER: Server validates everything (anti-cheat)
     if (isMultiplayer && gameRoomId && playerId) {
-      console.log('[TIMING] About to call Firebase submitWord');
-      multiplayerService.submitWord(gameRoomId, playerId, word, wordScore);
-      console.log('[TIMING] Firebase call initiated:', Date.now() - t0, 'ms');
-    }
+      console.log('[TIMING] Submitting to server for validation');
 
-    // Show success feedback
-    setFeedback(`+${wordScore} points!`);
-    console.log('[TIMING] handleSubmit END:', Date.now() - t0, 'ms');
+      // Call server-side validation
+      const result = await multiplayerService.submitWord(gameRoomId, playerId, word);
+      console.log('[TIMING] Server response:', Date.now() - t0, 'ms');
+
+      if (!result.success) {
+        // Server rejected the word
+        setFeedback(result.error || 'Invalid word');
+        Vibration.vibrate(100);
+        return;
+      }
+
+      // Server accepted - use server's score
+      const wordScore = result.score || 0;
+      setSubmittedWords((prev) => [...prev, { word, score: wordScore }]);
+      setTotalScore((prev) => prev + wordScore);
+      setFeedback(`+${wordScore} points!`);
+      console.log('[TIMING] handleSubmit END (multiplayer):', Date.now() - t0, 'ms');
+    } else {
+      // PRACTICE MODE: Client-side validation only
+      const validStart = Date.now();
+      const isValid = isValidWord(word);
+      console.log('[TIMING] isValidWord took:', Date.now() - validStart, 'ms');
+      if (!isValid) {
+        setFeedback('Not a word');
+        Vibration.vibrate(100);
+        return;
+      }
+      console.log('[TIMING] After validation:', Date.now() - t0, 'ms');
+
+      // Calculate the score for this word
+      const wordScore = calculateScore(word);
+      console.log('[TIMING] Score calculated:', Date.now() - t0, 'ms');
+
+      // Add to submitted words
+      setSubmittedWords((prev) => [...prev, { word, score: wordScore }]);
+
+      // Update total score
+      setTotalScore((prev) => prev + wordScore);
+      console.log('[TIMING] State updated:', Date.now() - t0, 'ms');
+
+      // Show success feedback
+      setFeedback(`+${wordScore} points!`);
+      console.log('[TIMING] handleSubmit END (practice):', Date.now() - t0, 'ms');
+    }
 
     // Get the IDs of letters that were used in this word
     const usedLetterIds = currentWordLetters.map((l) => l.id);
@@ -432,7 +448,7 @@ export default function GameScreen({ navigation, route }: GameScreenProps) {
 
     // Pleasant vibration for success
     Vibration.vibrate([0, 50, 30, 50]);
-  }, [currentWordLetters, submittedWords]);
+  }, [currentWordLetters, submittedWords, isMultiplayer, gameRoomId, playerId]);
 
   // --------------------------------------------------------
   // QUIT GAME

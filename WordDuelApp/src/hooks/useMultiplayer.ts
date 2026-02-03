@@ -24,8 +24,6 @@ export type MatchmakingStatus =
   | 'playing'        // Game in progress
   | 'finished';      // Game ended
 
-export type BetCurrency = 'SOL' | 'USDC';
-
 export interface UseMultiplayerResult {
   // State
   status: MatchmakingStatus;
@@ -36,10 +34,10 @@ export interface UseMultiplayerResult {
   error: string | null;
 
   // Actions
-  findMatch: (playerId: string, betAmount: number, betCurrency?: BetCurrency) => Promise<void>;
+  findMatch: (playerId: string, betAmount?: number) => Promise<void>;
   cancelSearch: () => Promise<void>;
   setReady: () => Promise<void>;
-  submitWord: (word: string, score: number) => Promise<void>;
+  submitWord: (word: string) => Promise<void>;
   endGame: () => Promise<GameRoom | null>;
   leaveGame: () => void;
 }
@@ -108,19 +106,19 @@ export function useMultiplayer(): UseMultiplayerResult {
 
   /**
    * Start searching for an opponent.
+   * All games use 0.01 SOL bet (fixed).
    */
   const findMatch = useCallback(
-    async (playerId: string, betAmount: number, betCurrency: BetCurrency = 'SOL') => {
+    async (playerId: string, betAmount: number = 0.01) => {
       try {
         setError(null);
         setStatus('searching');
         playerIdRef.current = playerId;
 
-        // Join the matchmaking queue
+        // Join the matchmaking queue (always SOL)
         const cleanup = await multiplayerService.joinQueue(
           playerId,
           betAmount,
-          betCurrency,
           (gameId) => {
             // Match found! Join the game
             setStatus('found');
@@ -178,17 +176,17 @@ export function useMultiplayer(): UseMultiplayerResult {
 
   /**
    * Submit a word during gameplay.
+   * Score is calculated server-side for anti-cheat.
    */
   const submitWord = useCallback(
-    async (word: string, score: number) => {
+    async (word: string) => {
       if (!gameRoom || !playerIdRef.current) return;
 
       try {
         await multiplayerService.submitWord(
           gameRoom.id,
           playerIdRef.current,
-          word,
-          score
+          word
         );
       } catch (err: any) {
         console.error('Failed to submit word:', err);
