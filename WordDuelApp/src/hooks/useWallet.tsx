@@ -15,6 +15,7 @@ import {
   Web3MobileWallet,
 } from '@solana-mobile/mobile-wallet-adapter-protocol-web3js';
 import { Connection, PublicKey, Transaction, clusterApiUrl } from '@solana/web3.js';
+import { Buffer } from 'buffer';
 
 // The Solana network we're connecting to (devnet = fake money for testing)
 const SOLANA_NETWORK = 'devnet';
@@ -110,7 +111,8 @@ export function WalletProvider({ children }: WalletProviderProps) {
         // Get the wallet's public address (like an account number)
         // The Seed Vault returns the address as a Base64 encoded string,
         // while other wallets might return Base58 or raw bytes.
-        const addressData = authorizationResult.accounts[0].address;
+        // Cast to unknown to handle all possible formats from different wallets
+        const addressData: unknown = authorizationResult.accounts[0].address;
         let walletPublicKey: PublicKey;
 
         if (addressData instanceof Uint8Array) {
@@ -127,12 +129,9 @@ export function WalletProvider({ children }: WalletProviderProps) {
 
           if (isBase64) {
             // Decode Base64 to bytes, then create PublicKey
-            // Using atob for Base64 decoding (available in React Native)
-            const binaryString = atob(trimmedAddress);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-              bytes[i] = binaryString.charCodeAt(i);
-            }
+            // Using Buffer.from (polyfilled in index.js) instead of atob
+            // (atob doesn't exist in React Native)
+            const bytes = Buffer.from(trimmedAddress, 'base64');
             walletPublicKey = new PublicKey(bytes);
           } else {
             // Assume it's a Base58 string

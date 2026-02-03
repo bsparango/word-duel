@@ -394,27 +394,38 @@ export default function GameScreen({ navigation, route }: GameScreenProps) {
     // Get the IDs of letters that were used in this word
     const usedLetterIds = currentWordLetters.map((l) => l.id);
 
-    // Generate new random letters to replace the used ones
-    const newLetters = generateRandomLetters(usedLetterIds.length);
+    if (isMultiplayer) {
+      // MULTIPLAYER: Keep the board static (don't replace letters)
+      // This ensures both players always see the same letters throughout the game.
+      // Used letters are "returned" to the pool and can be reused for other words.
+      setLetterPool((prev) =>
+        prev.map((poolLetter) => ({
+          ...poolLetter,
+          isUsed: false, // All letters available again
+        }))
+      );
+    } else {
+      // PRACTICE MODE: Replace used letters with new random ones
+      // This keeps the game interesting for solo practice
+      const newLetters = generateRandomLetters(usedLetterIds.length);
 
-    // Replace used letters with new random letters in the pool
-    // Each used letter gets replaced with a fresh letter in the same position
-    let newLetterIndex = 0;
-    setLetterPool((prev) =>
-      prev.map((poolLetter) => {
-        if (usedLetterIds.includes(poolLetter.id)) {
-          // This letter was used - replace it with a new random letter
-          const replacementLetter = newLetters[newLetterIndex];
-          newLetterIndex++;
-          return {
-            ...poolLetter,
-            letter: replacementLetter,
-            isUsed: false, // New letter is available
-          };
-        }
-        return poolLetter;
-      })
-    );
+      let newLetterIndex = 0;
+      setLetterPool((prev) =>
+        prev.map((poolLetter) => {
+          if (usedLetterIds.includes(poolLetter.id)) {
+            // This letter was used - replace it with a new random letter
+            const replacementLetter = newLetters[newLetterIndex];
+            newLetterIndex++;
+            return {
+              ...poolLetter,
+              letter: replacementLetter,
+              isUsed: false,
+            };
+          }
+          return poolLetter;
+        })
+      );
+    }
 
     // Clear the current word selection
     setCurrentWordLetters([]);

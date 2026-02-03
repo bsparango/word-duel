@@ -21,7 +21,10 @@ import {
 import {
   getAssociatedTokenAddress,
   createTransferInstruction,
+  createAssociatedTokenAccountInstruction,
   TOKEN_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  getAccount,
 } from '@solana/spl-token';
 
 import { getEscrowWallet, getUsdcMint } from '../config/escrow';
@@ -133,6 +136,39 @@ export async function buildUsdcDepositTransaction(
   console.log(`[Escrow] Player token account: ${playerTokenAccount.toString()}`);
   console.log(`[Escrow] Escrow token account: ${escrowTokenAccount.toString()}`);
 
+  // Build the transaction
+  const transaction = new Transaction();
+
+  // Check if player's token account exists - if not, we can't proceed
+  // (player needs to have USDC first)
+  try {
+    await getAccount(connection, playerTokenAccount);
+    console.log('[Escrow] Player token account exists');
+  } catch (error) {
+    console.log('[Escrow] Player does not have a USDC token account');
+    throw new Error('You need USDC in your wallet to make this deposit. Get devnet USDC from a faucet first.');
+  }
+
+  // Check if escrow's token account exists - create it if not
+  // This ensures the first USDC deposit to escrow doesn't fail
+  try {
+    await getAccount(connection, escrowTokenAccount);
+    console.log('[Escrow] Escrow token account exists');
+  } catch (error) {
+    console.log('[Escrow] Creating escrow token account...');
+    // Add instruction to create the escrow's token account
+    // The player pays for this (it's a small rent-exempt fee)
+    const createAtaInstruction = createAssociatedTokenAccountInstruction(
+      playerPublicKey, // payer
+      escrowTokenAccount, // ata address
+      escrowWallet, // owner
+      usdcMint, // mint
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    transaction.add(createAtaInstruction);
+  }
+
   // Create the SPL token transfer instruction
   const transferInstruction = createTransferInstruction(
     playerTokenAccount, // source
@@ -143,12 +179,10 @@ export async function buildUsdcDepositTransaction(
     TOKEN_PROGRAM_ID
   );
 
+  transaction.add(transferInstruction);
+
   // Get the latest blockhash
   const { blockhash } = await connection.getLatestBlockhash();
-
-  // Build the transaction
-  const transaction = new Transaction();
-  transaction.add(transferInstruction);
   transaction.recentBlockhash = blockhash;
   transaction.feePayer = playerPublicKey;
 

@@ -342,6 +342,8 @@ class MultiplayerService {
 
   /**
    * Submit a word and update the player's score.
+   * Uses Firebase transactions to prevent race conditions when submitting
+   * multiple words quickly.
    *
    * @param gameId - The game room ID
    * @param playerId - The player's wallet address
@@ -358,11 +360,9 @@ class MultiplayerService {
     console.log('[TIMING] submitWord START');
 
     const gameRef = database().ref(`games/${gameId}`);
-    console.log('[TIMING] gameRef created:', Date.now() - t0, 'ms');
 
+    // First, determine which player key to use
     const snapshot = await gameRef.once('value');
-    console.log('[TIMING] snapshot fetched:', Date.now() - t0, 'ms');
-
     if (!snapshot.exists()) {
       console.log('submitWord: Game not found:', gameId);
       return;
@@ -370,25 +370,33 @@ class MultiplayerService {
 
     const game = snapshot.val() as GameRoom;
     const playerKey = game.player1?.odid === playerId ? 'player1' : 'player2';
-    const player = game[playerKey] as PlayerState;
 
-    if (!player) {
-      console.log('submitWord: Player not found in game:', playerKey, playerId);
-      return;
+    // Use a transaction to atomically update score and words
+    // This prevents race conditions when submitting words quickly
+    const playerRef = gameRef.child(playerKey);
+
+    try {
+      await playerRef.transaction((currentData) => {
+        if (currentData === null) {
+          // Player data doesn't exist yet (shouldn't happen in normal flow)
+          return currentData;
+        }
+
+        // Atomically update the player's state
+        return {
+          ...currentData,
+          score: (currentData.score || 0) + score,
+          wordsFound: [...(currentData.wordsFound || []), word],
+          lastActivity: Date.now(),
+        };
+      });
+
+      console.log('[TIMING] submitWord END (transaction):', Date.now() - t0, 'ms');
+    } catch (error) {
+      console.error('[submitWord] Transaction failed:', error);
+      // Transaction failed - the word submission was lost
+      // In production, you might want to retry or notify the user
     }
-
-    // Firebase doesn't store empty arrays, so wordsFound might be undefined
-    const currentWords = player.wordsFound || [];
-    const currentScore = player.score || 0;
-    console.log('[TIMING] About to update Firebase:', Date.now() - t0, 'ms');
-
-    // Update player state
-    await gameRef.child(playerKey).update({
-      score: currentScore + score,
-      wordsFound: [...currentWords, word],
-      lastActivity: Date.now(),
-    });
-    console.log('[TIMING] submitWord END:', Date.now() - t0, 'ms');
   }
 
   /**
